@@ -1,0 +1,17 @@
+{
+  "name": "MONOLITH // Local Audio Deck",
+  "short_name": "MONOLITH",
+  "description": "Personal offline local music player blending smoked glassmorphism with ASCII/pixel matrix aesthetics.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#070709",
+  "theme_color": "#070709",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

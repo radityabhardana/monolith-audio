@@ -1,0 +1,22 @@
+# Dependencies & build
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Local audio inbox & runtime sync state (personal files, not for git)
+public/inbox/*
+!public/inbox/.gitkeep
+scripts/playlist.txt
+scripts/downloaded_ids.json
+scripts/lyrics.json
+scripts/sync_status.json
+scripts/sync.log
+scripts/*.tmp
+scripts/__pycache__/
+
+# Logs & OS / editor files
+*.log
+.DS_Store
+Thumbs.db
+.env
+.env.*

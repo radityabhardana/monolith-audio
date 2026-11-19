@@ -1,0 +1,87 @@
+# Progress
+
+## Task: auto-download YT Music playlist into local player
+
+Decisions:
+- Downloader runs locally via Python + yt-dlp, triggered by Windows Task Scheduler.
+- App is served locally (no service worker needed); audio lives in IndexedDB.
+- Identity = YouTube video ID (`yt::<id>`) for stable dedup.
+
+- [x] Recon: confirm app is static Vite/React with IndexedDB-backed tracks
+- [x] `scripts/sync_playlist.py` (diff by video ID, MP3 + embedded metadata/cover)
+- [x] `scripts/playlist.txt`, `scripts/downloaded_ids.json`, `public/inbox/manifest.json`
+- [x] `src/utils/inboxSync.ts` (fetch manifest -> File -> buildTrackFromFile -> IndexedDB)
+- [x] Hook auto-sync into `App.tsx` init
+- [x] Ignore `public/inbox` in Vite watcher to avoid reloads during playback
+- [x] Setup docs (`scripts/README.md`)
+- [x] Validate: `python -m py_compile`, script no-URL path, `npm run build`
+- [x] Live test: yt-dlp listing + real MP3 download with embedded title/artist (ffprobe verified)
+
+## Follow-up: UI input untuk link playlist (klarifikasi user)
+- [x] Bridge API lokal di `vite.config.ts`: GET/POST `/api/playlist`, GET `/api/sync/status`
+- [x] Validasi bridge: GET 200, POST invalid 400, status 200 (dev server di port 5178)
+- [x] Komponen `src/components/PlaylistSource.tsx` (input link, status, polling)
+- [x] Wiring `handleSynced` di `App.tsx`
+- [x] Fix: kartu UI dipindah keluar empty-state agar selalu tersedia
+- [x] Build ulang lolos (`npm run build`, exit 0)
+- [x] Update `scripts/README.md` untuk alur lewat UI
+- [x] Redesign layout kartu playlist: collapsed default, expand saat diklik, jarak dari bulk bar
+- [x] Build final lolos (`npm run build`, exit 0)
+- [x] Fix bug "kelempar ke home": Vite full-reload dipicu tulisan `scripts/playlist.txt`; watcher diabaikan
+- [x] Verifikasi via WebSocket HMR: `full-reload` hilang setelah fix
+- [x] Progress unduhan: script tulis `scripts/sync_status.json` (percent/current/done/total/error)
+- [x] Error asli disurfacekan (bukan sekadar "downloader exit 1") + log mentah `scripts/sync.log`
+- [x] UI progress bar + persen + judul lagu, polling 800ms
+- [x] Tes: 2 track via script, 1 track via bridge (0 -> 28.8 -> 57.5 -> 99.9 -> 100), jalur error
+- [x] Artefak tes dibersihkan; build final exit 0
+- [x] Fix `FileNotFoundError [WinError 2]`: script resolve `yt-dlp`/`ffmpeg` sendiri (PATH -> winget/scoop/Python Scripts), plus pesan error jelas kalau tidak ada
+- [x] Tes dengan PATH dipersempit: resolve benar + 2 track terunduh; tes tanpa biner: status error jelas
+- [x] Tombol **Batal** di UI + `POST /api/sync/cancel` (taskkill /T /F) → status "Dibatalkan", lagu selesai tetap masuk library
+- [x] Console window yang muncul terus saat unduh dihilangkan (`windowsHide` di bridge + `CREATE_NO_WINDOW` di subprocess Python); diverifikasi `MainWindowHandle = 0`
+- [x] Sisa file parsial dari cancel dibersihkan di awal sync (0-byte mp3 / .webm / .webp tidak masuk manifest)
+- [x] Tes cancel end-to-end lewat bridge: stop di 3.6%, `yt-dlp`/`ffmpeg`/python sisa 0, cancel kedua balas "Tidak ada unduhan yang berjalan"
+- [x] Smoke test unduh normal setelah perubahan: 2 track, manifest 2 entri, build exit 0
+- [x] Fix 403/503 thumbnail (`unable to download video data`): retry lebih sabar (`--retries 10 --retry-sleep 5`), retry tanpa `--embed-thumbnail` kalau 403, dan anggap sukses kalau mp3 non-kosong sudah ada
+- [x] Pesan error dirapikan: ambil baris `ERROR:` + lanjutannya (bukan potongan log info), path inbox tidak lagi bocor
+- [x] Kartu playlist jadi status **tertaut**: "Playlist tertaut" + URL + **Sinkronkan** + **Ganti link**, dot hijau saat tersambung
+- [x] Verifikasi nyata: run user 55/56 -> setelah fix `Sinkronkan` = 56/56, error kosong, manifest 56 entri
+- [x] Kartu sync dipindah ke tampilan playlist saja (`navSection === 'playlist'`), tidak muncul di Home/Library
+- [x] Link per playlist: `Playlist.source` disimpan di prefs, kartu pakai `key={playlist.id}` jadi tiap playlist punya cantolan sendiri; prefill dari `scripts/playlist.txt` dihapus
+- [x] Track hasil sync masuk ke playlist yang di-sync: `sync_playlist.py` menulis `public/inbox/playlist.json` (`url` + `ids`), `handleSynced` mencocokkan URL lalu menambah `yt::<id>` ke `trackKeys`
+- [x] Verifikasi: script menulis `playlist.json` 56 id, file sampah `.webp` tetap dibersihkan, manifest 56 entri, build exit 0
+- [x] Lagu hasil sync tidak lagi muncul di Home/Albums/Artists/Liked (`libraryTracks` = tanpa key `yt::`); hanya muncul di playlist-nya
+- [x] Judul/artis/album dari `manifest.json` dipakai saat restore (judul video ID hilang walau tag id3 gagal dibaca)
+- [x] File hasil import yang ukurannya beda dari manifest (sisa unduhan parsial) diimpor ulang otomatis saat app dibuka; manifest sekarang mencatat `size`
+- [x] Track hasil sync tidak lagi difilter `knownKeys`, jadi semua ID playlist masuk `trackKeys` walau import library belum selesai
+- [x] Refresh halaman: lagu terakhir + posisinya dipulihkan dalam keadaan pause (`savePlayback`/`loadPlayback` + `engine.loadPaused`), tidak balik ke track pertama
+- [x] Lirik otomatis dari LRCLIB (`/api/get` lalu `/api/search` + filter durasi ±5 detik): cache `scripts/lyrics.json`, ditulis ke `manifest.json` per track
+- [x] App memasang lirik manifest saat import dan saat restore (`parseLrc`), jadi tidak perlu `.lrc` manual per lagu
+- [x] Verifikasi playlist user: 56 track diproses, 44 dapat lirik tersinkron, 12 tidak ada di LRCLIB (track underground/remix), manifest 44 entri berlirik, build exit 0
+- [x] Tahap awal sync ditampilkan sebagai "Mengambil daftar lagu…" (selama `total` masih 0), baru "Mengunduh n%" setelah playlist selesai dibaca
+- [x] Status "Menyiapkan lirik & daftar lagu…" saat semua lagu sudah terunduh, jadi tidak lagi pura-pura "Mengunduh 100%"
+- [x] Playlist tujuan menerima daftar lagunya dari run yang baru selesai (`/api/sync/status` → `ids`), bukan menebak lewat `playlist.json` + URL. Bug sebelumnya: bridge melaporkan `running:false` sepersekian detik sebelum `ids` siap, jadi playlist tetap kosong walau semua lagu sudah ada
+- [x] Satu run sync pada satu waktu (`POST /api/playlist` balas 409 kalau masih jalan), supaya `ids` tidak nyasar ke playlist lain
+- [x] Verifikasi browser headless (Chrome CDP): playlist kosong + semua lagu sudah terunduh → klik Sinkronkan = 56 lagu masuk (toast "Playlist siap — 56 lagu"), run kedua tetap 56 (tidak dobel), build exit 0
+- [x] Fix lagu dobel (56 → 112 baris): kalau Sinkronkan diklik saat app masih memuat library dari IndexedDB, `syncInbox` tidak tahu key yang sudah dimuat lalu mengimpor ulang 56 file yang sama. Sekarang `handleSynced` baca `tracksRef` (key terbaru) dan gabung track baru tanpa duplikat key. Reproduksi + verifikasi via Chrome CDP: 112 → 56
+- [x] Lirik nyasar (lagu beda): `fetch_lyrics` sekarang wajib cocok nama artis (normalisasi, boleh sebagian) atau judul persis + durasi beda ≤ 1 detik, plus toleransi durasi ≤ 5 detik. Cache lama dihapus lalu sync ulang penuh: 44 → 36 lagu berlirik, 8 lirik yang hilang semuanya memang lagu lain (mis. "Don't You Want My Love" → "I Don't Want You To Go" punya La Toya Jackson; "Love Somebody" → Moncrieff). 20 lagu sisanya kosong karena tidak ada versi artis yang cocok di LRCLIB (rilis underground), bukan karena filter kebanyakan
+- [x] Offset lirik per lagu di header panel lirik (`−` / `+` 0,5 detik, klik angka = reset), disimpan di `lyricOffsets` preferensi — buat kasus video YouTube beda edit dengan master LRCLIB
+- [x] Buang sisa tombol "Pop-out" di dynamic island (yang masih muncul di kartu mini player), termasuk prop `devicePopupOpen` / `onToggleDevicePopup` yang jadi tidak terpakai. Pop-out tetap bisa dari Command Palette (P)
+- [x] Durasi total playlist/album/artis sekarang pakai jam kalau ≥ 60 menit (`formatDuration`: `196:23` → `3h 16m`), `formatTime` untuk timestamp lagu tidak diubah
+- [x] Fitur demo dibuang: tidak ada lagi seed 3 lagu demo di library, kartu "Quick Sources" (Folder/Files/Demo 3×) diganti tampilan artists saja (disembunyikan kalau belum ada artis), tombol "Load Starter Tracks", "Load 3 Starter Albums", "Restore 3 Starter Artists" dan slot "Starter Albums" dihapus, prop `onRestoreStarter` di Albums/Artists ikut dibuang. File `src/utils/demoTracks.ts` dibiarkan (tidak diimpor lagi)
+- [x] Tombol `Art: <mode>` di banner koleksi dihapus (ganti gaya cover tetap bisa dari klik artwork / shortcut D / Command Palette)
+- [x] Status pemutaran di sidebar: baris playlist yang punya lagu yang sedang dimuat dapat ikon equalizer (accent + pulse saat play, redup saat pause, slot `w-3.5` tetap jadi nama tidak bergeser)
+- [x] Edit nama & gambar playlist: pensil di judul banner (inline input, Enter/blur simpan, Esc batal) dan hover artwork → "Ganti gambar" (file di-crop 1:1 jadi JPEG 700px, disimpan sebagai `Playlist.coverUrl` data URL di preferensi). Cover custom menggantikan mosaic 2×2. Build exit 0
+- [x] Kartu player ngambang di atas (dynamic island) dihapus total dari App: render, import, hook `useDevicePopup`, shortcut `P`, entri Command Palette "Floating Device Status Pop-up", dan spacer 304px di header (yang tadinya ruang buat kartu itu). File `TopDynamicIsland.tsx` + `hooks/useDevicePopup.ts` dibiarkan di disk tapi tidak diimpor lagi
+- [x] Home sekarang menampilkan lagu campuran dari semua sumber (`displayedTracks` untuk `navSection === 'library'` pakai `hydratedTracks`), count Home + Local Vault + total durasi ikut `hydratedTracks`
+- [x] "Recent" kosong padahal lagu sudah diputar: `displayedTracks` untuk `history` me-resolve key ke `libraryTracks` (yang tidak berisi track hasil sync), jadi semua entri terbuang. Sekarang resolve ke `hydratedTracks`
+- [x] Angka jumlah lagu di baris playlist sidebar dihapus (indikator equalizer tetap ada)
+- [x] Tombol pensil "Edit metadata" di bottom player bar dihapus (edit metadata tetap bisa dari baris track)
+- [x] Layout: sidebar kiri solid (tidak ikut scroll), hanya kolom tengah yang scroll, kolom kanan `xl:sticky` dengan tinggi `calc(100dvh-11.5rem)` dan Audio Matrix `mt-auto` jadi selalu nempel bawah. Verifikasi Chrome CDP 1536×760: `aside` tetap `top 0 / bottom 675` sebelum & sesudah scroll, Audio Matrix tetap `431-642`, `window.scrollY` tetap 0
+- [x] Card Lyrics di kolom kanan dibuat `flex-1` (min `14.25rem`) supaya menyerap ruang kosong di atas Audio Matrix; grid "Local Artists" tetap tersembunyi selama belum ada artis lokal
+- [x] Sync crash `UnicodeEncodeError: 'charmap' codec ... \u010d` (judul "Outsider č Music"): stdout/stderr `sync_playlist.py` di-`reconfigure(encoding="utf-8", errors="replace")`; file status/manifest/lirik memang sudah UTF-8. Verifikasi `python -c` dengan redirect: exit 1 → exit 0 — setelah fix, playlist "Outsider Music" berhasil sync 42 lagu (inbox total 98 file)
+- [x] Banner koleksi kasih status "lagi diputar": saat track yang berbunyi milik koleksi itu, artwork dapat badge piringan hitam (berputar hanya saat play, `motion-reduce` mati), eyebrow dapat pill `NOW PLAYING` / `PAUSED`, dan tombol utama jadi `Pause` / `Resume` (bukan `Play All`). Prop baru: `isCurrent`, `isPlaying`, `onTogglePlay`; shuffle tidak berubah. Verifikasi Chrome CDP: klik lagu → pill "NOW PLAYING" + vinyl `animationName: spin` + tombol "Pause"; klik tombol → vinyl berhenti
+- [x] Verifikasi Chrome CDP: "Recent" sekarang terisi setelah lagu diputar (`Recent 1`, 1 baris, empty state hilang), card Lyrics kolom kanan melar 83→418px dan Audio Matrix 431→642px (sisa celah 13px)
+- [x] Manifest cuma menyimpan run terakhir, jadi sync playlist kedua menghapus entri playlist pertama (judul, ukuran, lirik) — begitu halaman di-refresh, 56 track House & Garage kehilangan lirik dan pemeriksaan ukuran file tidak bisa jalan. `write_manifest` sekarang merge entri lama (yang filenya masih ada), sedangkan `playlist.json`/`ids` tetap hanya berisi track dari run yang baru selesai. Verifikasi: sync House (56) lalu Outsider (42) → `manifest.json` 98 entri, `playlist.json` 42 id
+- [x] Restore library dari IndexedDB masih berurutan: 98 track butuh ~33 detik, dan selama itu halaman playlist tampil "0 tracks" plus semua klik mati. Sekarang pool 6 worker (urutan hasil tetap), plus status `Memuat library...` supaya tidak dikira empty state
+- [x] File tersimpan yang rusak (0 byte/partial) dulu berubah jadi track tanpa cover + tidak bisa diputar, tanpa pesan apa pun. Sekarang: track hasil restore dengan durasi tidak terbaca dibuang dari IndexedDB lalu diimpor ulang dari manifest (yang sudah membawa `size`), dan kegagalan `play()` memunculkan toast `Gagal memutar "..." — file-nya rusak, coba Sinkronkan ulang`
+- [x] Verifikasi Chrome CDP (profil kosong, 2 playlist, 98 track): restore 33s → 11s, 42/42 baris Outsider punya cover (`img` + mosaic 47 blob), klik lagu langsung bunyi (`ready 4`, 2,6 detik berjalan), banner `NOW PLAYING`, tanpa exception. Build exit 0
