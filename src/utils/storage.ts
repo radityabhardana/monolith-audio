@@ -30,6 +30,8 @@ export const DEFAULT_AUDIO_FX: AudioFxSettings = {
   stereoWidth: 1,
   compressor: false,
   lowpassHz: 20000,
+  crossfadeSec: 0,
+  autoRadio: false,
 };
 
 export const DEFAULT_PREFS: UserPreferences = {

@@ -2,12 +2,15 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   ArrowsOutSimple,
+  Broadcast,
+  Browsers,
   Equalizer,
   MagnifyingGlass,
   Moon,
   Play,
   Sparkle,
   X,
+  YoutubeLogo,
 } from '@phosphor-icons/react';
 import { Track } from '../types/music';
 import { CoverArtRenderer } from './CoverArtRenderer';
@@ -22,6 +25,9 @@ interface CommandPaletteProps {
   onCycleCoverMode: () => void;
   onToggleSlowedReverb: () => void;
   onSetSleep15: () => void;
+  onOpenImportYouTube?: () => void;
+  onToggleMiniPlayer?: () => void;
+  onToggleAutoRadio?: () => void;
 }
 
 export const CommandPalette: React.FC<CommandPaletteProps> = ({
@@ -34,6 +40,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   onCycleCoverMode,
   onToggleSlowedReverb,
   onSetSleep15,
+  onOpenImportYouTube,
+  onToggleMiniPlayer,
+  onToggleAutoRadio,
 }) => {
   const [query, setQuery] = useState('');
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -47,13 +56,22 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
 
   const actions = useMemo(
     () => [
+      ...(onOpenImportYouTube
+        ? [{ id: 'import-yt', label: 'Import Song / Playlist from YouTube', icon: YoutubeLogo, run: onOpenImportYouTube }]
+        : []),
+      ...(onToggleMiniPlayer
+        ? [{ id: 'mini-player', label: 'Toggle Floating Mini-Player (PiP)', icon: Browsers, run: onToggleMiniPlayer }]
+        : []),
+      ...(onToggleAutoRadio
+        ? [{ id: 'auto-radio', label: 'Toggle Infinite Auto-Radio Mode', icon: Broadcast, run: onToggleAutoRadio }]
+        : []),
       { id: 'fx', label: 'Open Equalizer & Audio FX', icon: Equalizer, run: onOpenFx },
       { id: 'slowed', label: 'Toggle Slowed + Reverb Vibe', icon: Sparkle, run: onToggleSlowedReverb },
       { id: 'art', label: 'Switch Cover Art ASCII / Dither Style', icon: Sparkle, run: onCycleCoverMode },
       { id: 'zen', label: 'Toggle Fullscreen Zen Mode', icon: ArrowsOutSimple, run: onToggleZen },
       { id: 'sleep', label: 'Set Sleep Timer (15 min)', icon: Moon, run: onSetSleep15 },
     ],
-    [onOpenFx, onToggleSlowedReverb, onCycleCoverMode, onToggleZen, onSetSleep15]
+    [onOpenImportYouTube, onToggleMiniPlayer, onToggleAutoRadio, onOpenFx, onToggleSlowedReverb, onCycleCoverMode, onToggleZen, onSetSleep15]
   );
 
   const filteredActions = useMemo(() => {

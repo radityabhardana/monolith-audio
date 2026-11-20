@@ -1,9 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
+  Broadcast,
+  Browsers,
   Check,
   ClockCounterClockwise,
   Disc,
+  DownloadSimple,
   Equalizer,
   FileAudio,
   FolderPlus,
@@ -29,6 +32,7 @@ import {
   SpeakerSlash,
   Trash,
   User,
+  YoutubeLogo,
 } from '@phosphor-icons/react';
 import { AlbumsView } from './components/AlbumsView';
 import { ArtistsView } from './components/ArtistsView';
@@ -39,13 +43,16 @@ import { CommandPalette } from './components/CommandPalette';
 import { ConfirmModal } from './components/ConfirmModal';
 import { CoverArtRenderer } from './components/CoverArtRenderer';
 import { DevaultArtworkCanvas } from './components/DevaultArtworkCanvas';
+import { ImportYouTubeModal } from './components/ImportYouTubeModal';
 import { KawarpBackdrop } from './components/KawarpBackdrop';
 import { LyricsPanel } from './components/LyricsPanel';
 import { MetadataEditorModal } from './components/MetadataEditorModal';
 import { PlaylistSource } from './components/PlaylistSource';
 import { QueuePanel } from './components/QueuePanel';
+import { TopDynamicIsland } from './components/TopDynamicIsland';
 import { ZenModeOverlay } from './components/ZenModeOverlay';
 import { useAudioEngine } from './hooks/useAudioEngine';
+import { useDevicePopup } from './hooks/useDevicePopup';
 import {
   CoverRenderMode,
   HistoryEntry,
@@ -177,6 +184,12 @@ export function App() {
 
   const [zenOpen, setZenOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [importModalOpen, setImportModalOpen] = useState(false);
+  const [installPrompt, setInstallPrompt] = useState<{
+    prompt: () => Promise<void>;
+    userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
+  } | null>(null);
+  const devicePopup = useDevicePopup();
   const [editingTrack, setEditingTrack] = useState<Track | null>(null);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedTrackIds, setSelectedTrackIds] = useState<string[]>([]);
@@ -279,6 +292,8 @@ export function App() {
     currentTrack,
     onSelectTrack: handleSelectTrack,
     onTrackStarted: handleTrackStarted,
+    onAutoRadioPick: (track: Track) =>
+      showToast(`Auto-Radio: ${track.title} — ${track.artist}`),
     onPlaybackError: (track: Track) =>
       showToast(`Gagal memutar "${track.title}" — file-nya rusak, coba Sinkronkan ulang`),
     initialVolume: initialPrefs.volume,
@@ -287,6 +302,20 @@ export function App() {
     initialEqEnabled: initialPrefs.eqEnabled,
     initialAudioFx: initialPrefs.audioFx,
   });
+
+  useEffect(() => {
+    const onBeforeInstall = (e: Event) => {
+      e.preventDefault();
+      setInstallPrompt(
+        e as unknown as {
+          prompt: () => Promise<void>;
+          userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
+        }
+      );
+    };
+    window.addEventListener('beforeinstallprompt', onBeforeInstall);
+    return () => window.removeEventListener('beforeinstallprompt', onBeforeInstall);
+  }, []);
 
   const playFromList = useCallback(
     (track: Track, list: Track[], playlistId?: string | null) => {
@@ -543,6 +572,75 @@ export function App() {
       }
       showToast(
         ids.length > 0 ? `Playlist siap — ${ids.length} lagu` : 'Playlist selesai, belum ada track baru'
+      );
+    },
+    [buildTrackFromFile, showToast]
+  );
+
+  const handleImportModalComplete = useCallback(
+    async (
+      ids: string[],
+      target: {
+        type: 'new' | 'existing' | 'inbox';
+        name?: string;
+        playlistId?: string;
+        url: string;
+      }
+    ) => {
+      const synced = await syncInbox(
+        new Set(tracksRef.current.map((t) => t.key)),
+        buildTrackFromFile
+      );
+      if (synced.length > 0) {
+        setTracks((prev) => {
+          const known = new Set(prev.map((t) => t.key));
+          const unique: Track[] = [];
+          for (const t of synced) {
+            if (known.has(t.key)) {
+              revokeTrackUrls(t);
+            } else {
+              known.add(t.key);
+              unique.push(t);
+            }
+          }
+          return unique.length > 0 ? [...unique, ...prev] : prev;
+        });
+        setCurrentTrackId((prev) => prev ?? synced[0]?.id ?? null);
+      }
+
+      const keys = ids.map((id) => `yt::${id}`);
+      if (target.type === 'new') {
+        const createdId = `pl-${Date.now()}`;
+        const created: Playlist = {
+          id: createdId,
+          name: target.name || 'YouTube Import',
+          source: target.url,
+          trackKeys: Array.from(new Set(keys)),
+          createdAt: Date.now(),
+        };
+        setPlaylists((prev) => [...prev, created]);
+        setNavSection('playlist');
+        setActivePlaylistId(createdId);
+      } else if (target.type === 'existing' && target.playlistId) {
+        setPlaylists((prev) =>
+          prev.map((pl) =>
+            pl.id === target.playlistId
+              ? {
+                  ...pl,
+                  source: pl.source || target.url,
+                  trackKeys: Array.from(new Set([...pl.trackKeys, ...keys])),
+                }
+              : pl
+          )
+        );
+        setNavSection('playlist');
+        setActivePlaylistId(target.playlistId);
+      }
+
+      showToast(
+        synced.length > 0
+          ? `Berhasil mengimpor ${synced.length} lagu baru!`
+          : `Import selesai — ${ids.length} lagu siap diputar`
       );
     },
     [buildTrackFromFile, showToast]
@@ -1756,13 +1854,23 @@ export function App() {
                 <span className="font-mono text-[11px] tracking-[0.16em] uppercase text-zinc-500">
                   PLAYLIST
                 </span>
-                <button
-                  onClick={() => setCreatingPlaylist((c) => !c)}
-                  className="p-1 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 transition"
-                  title="New Playlist"
-                >
-                  <Plus size={13} />
-                </button>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setImportModalOpen(true)}
+                    className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-500/10 hover:bg-red-500/20 border border-red-500/25 text-red-400 hover:text-red-300 font-mono text-[10px] transition"
+                    title="Import Song / Playlist from YouTube"
+                  >
+                    <YoutubeLogo size={12} weight="fill" />
+                    <span>Import</span>
+                  </button>
+                  <button
+                    onClick={() => setCreatingPlaylist((c) => !c)}
+                    className="p-1 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 transition"
+                    title="New Playlist"
+                  >
+                    <Plus size={13} />
+                  </button>
+                </div>
               </div>
 
               {creatingPlaylist && (
@@ -1972,9 +2080,31 @@ export function App() {
               </div>
 
               {(importingCount > 0 ||
+                installPrompt !== null ||
                 engine.sleepRemainingSec !== null ||
                 engine.sleepAfterTrack) && (
                 <div className="flex items-center gap-1.5 shrink-0">
+                  {installPrompt && (
+                    <button
+                      onClick={async () => {
+                        try {
+                          await installPrompt.prompt();
+                          const choice = await installPrompt.userChoice;
+                          if (choice.outcome === 'accepted') {
+                            setInstallPrompt(null);
+                            showToast('Monolith Audio berhasil diinstal ke Desktop!');
+                          }
+                        } catch {
+                          setInstallPrompt(null);
+                        }
+                      }}
+                      className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 font-mono text-[11px] text-white transition"
+                      title="Install Monolith Audio as a Standalone Desktop App"
+                    >
+                      <DownloadSimple size={13} weight="bold" />
+                      <span>Install App</span>
+                    </button>
+                  )}
                   {importingCount > 0 && (
                     <span className="font-mono text-xs text-zinc-300 animate-pulse mr-1">
                       +{importingCount}...
@@ -2955,6 +3085,15 @@ export function App() {
                               currentTrack={currentTrack}
                               queueTracks={queueTracks}
                               upNextTracks={upNextAutoTracks}
+                              autoRadio={engine.autoRadio}
+                              onToggleAutoRadio={() => {
+                                engine.toggleAutoRadio();
+                                showToast(
+                                  !engine.autoRadio
+                                    ? 'Auto-Radio aktif — musik berlanjut otomatis saat playlist selesai'
+                                    : 'Auto-Radio dimatikan'
+                                );
+                              }}
                               onPlayTrack={(t) => void engine.playTrack(t)}
                               onMoveQueue={engine.moveQueueItem}
                               onRemoveQueue={engine.removeFromQueue}
@@ -3332,9 +3471,63 @@ export function App() {
               {engine.repeat === 'one' ? <RepeatOnce size={17} weight="bold" /> : <Repeat size={17} />}
             </button>
 
-            </div>
+            <button
+              onClick={() => {
+                engine.toggleAutoRadio();
+                showToast(
+                  !engine.autoRadio
+                    ? 'Auto-Radio aktif — memutar lagu acak saat antrean habis'
+                    : 'Auto-Radio dimatikan'
+                );
+              }}
+              className={`p-1.5 rounded-full transition ${
+                engine.autoRadio ? 'text-white bg-white/15' : 'text-zinc-400 hover:text-white'
+              }`}
+              title={`Auto-Radio: ${engine.autoRadio ? 'On' : 'Off'}`}
+            >
+              <Broadcast size={17} weight={engine.autoRadio ? 'fill' : 'regular'} />
+            </button>
+
+            <button
+              onClick={() => void devicePopup.togglePopup()}
+              className={`p-1.5 rounded-full transition ${
+                devicePopup.isOpen ? 'text-white bg-white/15' : 'text-zinc-400 hover:text-white'
+              }`}
+              title="Floating Mini-Player (Picture-in-Picture)"
+            >
+              <Browsers size={17} weight={devicePopup.isOpen ? 'fill' : 'regular'} />
+            </button>
+          </div>
         </footer>
       </div>
+
+      {/* Always-on-Top Mini-Player Portal */}
+      <TopDynamicIsland
+        pipOnly
+        track={currentTrack}
+        isPlaying={engine.isPlaying}
+        currentTime={engine.currentTime}
+        duration={engine.duration}
+        coverMode={coverMode}
+        tuner={initialPrefs.asciiTuner}
+        getFrequencyData={engine.getFrequencyData}
+        onTogglePlay={() => void engine.togglePlay()}
+        onPrev={engine.prevTrack}
+        onNext={engine.nextTrack}
+        onSeek={engine.seek}
+        onOpenZen={() => setZenOpen(true)}
+        pipContainer={devicePopup.container}
+        onCloseDevicePopup={devicePopup.closePopup}
+      />
+
+      {/* Global YouTube Import Modal */}
+      <ImportYouTubeModal
+        open={importModalOpen}
+        onClose={() => setImportModalOpen(false)}
+        playlists={playlists}
+        activePlaylistId={activePlaylistId}
+        onImportComplete={handleImportModalComplete}
+      />
 
       {/* Fullscreen Zen Overlay */}
       <ZenModeOverlay
@@ -3399,6 +3592,16 @@ export function App() {
         onSetSleep15={() => {
           engine.setSleepTimerMinutes(15);
           showToast('Sleep timer: 15 min');
+        }}
+        onOpenImportYouTube={() => setImportModalOpen(true)}
+        onToggleMiniPlayer={() => void devicePopup.togglePopup()}
+        onToggleAutoRadio={() => {
+          engine.toggleAutoRadio();
+          showToast(
+            !engine.autoRadio
+              ? 'Auto-Radio aktif — memutar lagu acak saat antrean habis'
+              : 'Auto-Radio dimatikan'
+          );
         }}
       />
 

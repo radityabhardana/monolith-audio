@@ -1,5 +1,5 @@
 import React from 'react';
-import { ArrowDown, ArrowUp, Play, Trash, X } from '@phosphor-icons/react';
+import { ArrowDown, ArrowUp, Broadcast, Play, Trash, X } from '@phosphor-icons/react';
 import { Track } from '../types/music';
 import { formatTime } from '../utils/id3';
 import { CoverArtRenderer } from './CoverArtRenderer';
@@ -8,6 +8,8 @@ interface QueuePanelProps {
   currentTrack: Track | null;
   queueTracks: Track[];
   upNextTracks: Track[];
+  autoRadio: boolean;
+  onToggleAutoRadio: () => void;
   onPlayTrack: (track: Track) => void;
   onMoveQueue: (from: number, to: number) => void;
   onRemoveQueue: (index: number) => void;
@@ -18,6 +20,8 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
   currentTrack,
   queueTracks,
   upNextTracks,
+  autoRadio,
+  onToggleAutoRadio,
   onPlayTrack,
   onMoveQueue,
   onRemoveQueue,
@@ -25,17 +29,31 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
 }) => {
   return (
     <div className="flex flex-col h-full min-h-0">
-      <div className="flex items-center justify-between pb-3 border-b border-white/[0.06] shrink-0">
+      <div className="flex items-center justify-between gap-2 pb-3 border-b border-white/[0.06] shrink-0">
         <h3 className="text-sm font-semibold text-zinc-100">Queue</h3>
-        {queueTracks.length > 0 && (
+        <div className="flex items-center gap-1.5">
           <button
-            onClick={onClearQueue}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-white/[0.05] hover:bg-white/[0.1] text-[11px] text-zinc-300 transition"
+            onClick={onToggleAutoRadio}
+            title="Auto-Radio terus memutar rekomendasi acak dari seluruh library saat playlist selesai"
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium border transition ${
+              autoRadio
+                ? 'bg-white text-zinc-950 border-white font-semibold'
+                : 'bg-white/[0.04] hover:bg-white/[0.09] border-white/[0.08] text-zinc-300'
+            }`}
           >
-            <Trash size={12} />
-            <span>Clear</span>
+            <Broadcast size={12} weight={autoRadio ? 'fill' : 'regular'} />
+            <span>Radio</span>
           </button>
-        )}
+          {queueTracks.length > 0 && (
+            <button
+              onClick={onClearQueue}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-white/[0.05] hover:bg-white/[0.1] text-[11px] text-zinc-300 transition"
+            >
+              <Trash size={12} />
+              <span>Clear</span>
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto py-3 space-y-5 pr-1">
@@ -136,9 +154,16 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
 
         {upNextTracks.length > 0 && (
           <div className="space-y-2">
-            <p className="font-mono text-[10px] uppercase tracking-wider text-zinc-500">
-              Next from Library
-            </p>
+            <div className="flex items-center justify-between">
+              <p className="font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+                {autoRadio ? 'Auto-Radio Pool' : 'Next from Library'}
+              </p>
+              {autoRadio && (
+                <span className="font-mono text-[9px] uppercase tracking-wider text-emerald-400">
+                  Infinite On
+                </span>
+              )}
+            </div>
             <div className="space-y-1">
               {upNextTracks.slice(0, 6).map((track) => (
                 <button

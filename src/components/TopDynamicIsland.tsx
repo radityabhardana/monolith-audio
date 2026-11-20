@@ -29,6 +29,7 @@ interface TopDynamicIslandProps {
   onOpenZen: () => void;
   pipContainer: HTMLElement | null;
   onCloseDevicePopup: () => void;
+  pipOnly?: boolean;
 }
 
 const BRAILLE_METER = ['⠀', '⣀', '⣄', '⣤', '⣦', '⣶', '⣷', '⣿'];
@@ -92,6 +93,7 @@ export const TopDynamicIsland: React.FC<TopDynamicIslandProps> = ({
   onOpenZen,
   pipContainer,
   onCloseDevicePopup,
+  pipOnly = false,
 }) => {
   const [expanded, setExpanded] = useState(false);
   const [pinned, setPinned] = useState(false);
@@ -135,7 +137,7 @@ export const TopDynamicIsland: React.FC<TopDynamicIslandProps> = ({
 
   return (
     <>
-      {/* In-App Top-Center Dynamic Island (centered over main content header slot) */}
+      {!pipOnly && (
       <div
         className="fixed top-2.5 left-1/2 md:left-[calc(50%+122px)] -translate-x-1/2 z-50 flex flex-col items-center pointer-events-auto"
         onMouseEnter={() => setExpanded(true)}
@@ -258,6 +260,7 @@ export const TopDynamicIsland: React.FC<TopDynamicIslandProps> = ({
           </AnimatePresence>
         </motion.div>
       </div>
+      )}
 
       {/* Device-Level Always-on-Top Floating Pop-up Portal */}
       {pipContainer &&

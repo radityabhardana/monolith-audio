@@ -42,6 +42,7 @@ interface UseAudioEngineOptions {
   currentTrack: Track | null;
   onSelectTrack: (track: Track) => void;
   onTrackStarted?: (track: Track) => void;
+  onAutoRadioPick?: (track: Track) => void;
   onPlaybackError?: (track: Track) => void;
   initialVolume: number;
   initialEqGains: number[];
@@ -56,6 +57,7 @@ export function useAudioEngine({
   currentTrack,
   onSelectTrack,
   onTrackStarted,
+  onAutoRadioPick,
   onPlaybackError,
   initialVolume,
   initialEqGains,
@@ -80,8 +82,12 @@ export function useAudioEngine({
   } | null>(null);
   const dryGainRef = useRef<GainNode | null>(null);
   const wetGainRef = useRef<GainNode | null>(null);
+  const crossfadeGainRef = useRef<GainNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const pendingSeekCleanupRef = useRef<(() => void) | null>(null);
+  const fadingOutNearEndRef = useRef(false);
+  const recentRadioIdsRef = useRef<string[]>([]);
+  const lastPositionSyncRef = useRef(0);
 
   const clearPendingSeek = useCallback(() => {
     pendingSeekCleanupRef.current?.();
@@ -227,6 +233,10 @@ export function useAudioEngine({
       const wetGain = ctx.createGain();
       wetGainRef.current = wetGain;
 
+      const crossfadeGain = ctx.createGain();
+      crossfadeGain.gain.value = 1;
+      crossfadeGainRef.current = crossfadeGain;
+
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 256;
       analyser.smoothingTimeConstant = 0.78;
@@ -253,14 +263,15 @@ export function useAudioEngine({
       lr.connect(merger, 0, 1);
       rr.connect(merger, 0, 1);
 
-      // Dry + Reverb parallel mix
+      // Dry + Reverb parallel mix -> Crossfade stage -> Analyser -> Destination
       merger.connect(dryGain);
-      dryGain.connect(analyser);
+      dryGain.connect(crossfadeGain);
 
       merger.connect(convolver);
       convolver.connect(wetGain);
-      wetGain.connect(analyser);
+      wetGain.connect(crossfadeGain);
 
+      crossfadeGain.connect(analyser);
       analyser.connect(ctx.destination);
       syncFxNodes(audioFx);
     }
@@ -289,17 +300,28 @@ export function useAudioEngine({
     audioRef.current.volume = muted ? 0 : volume;
   }, [volume, muted]);
 
-  // Sleep timer countdown ticker
+  // Sleep timer countdown ticker with smooth 10s fadeout
   useEffect(() => {
     if (!sleepEndTime) {
       setSleepRemainingSec(null);
+      if (audioRef.current) {
+        audioRef.current.volume = muted ? 0 : volume;
+      }
       return;
     }
     const tick = () => {
       const rem = Math.max(0, Math.ceil((sleepEndTime - Date.now()) / 1000));
       setSleepRemainingSec(rem);
+      if (audioRef.current && !muted) {
+        if (rem <= 10 && rem > 0) {
+          audioRef.current.volume = volume * (rem / 10);
+        } else if (rem > 10) {
+          audioRef.current.volume = volume;
+        }
+      }
       if (rem <= 0) {
         audioRef.current?.pause();
+        if (audioRef.current) audioRef.current.volume = muted ? 0 : volume;
         setIsPlaying(false);
         setSleepEndTime(null);
       }
@@ -307,7 +329,7 @@ export function useAudioEngine({
     tick();
     const timer = window.setInterval(tick, 1000);
     return () => window.clearInterval(timer);
-  }, [sleepEndTime]);
+  }, [sleepEndTime, volume, muted]);
 
   const setSleepTimerMinutes = useCallback((mins: number | 'track' | null) => {
     if (mins === null) {
@@ -325,6 +347,39 @@ export function useAudioEngine({
     setSleepEndTime(Date.now() + mins * 60 * 1000);
   }, []);
 
+  const autoRadio = Boolean(audioFx.autoRadio);
+  const crossfadeSec = Math.max(0, Math.min(10, audioFx.crossfadeSec ?? 0));
+
+  const toggleAutoRadio = useCallback(() => {
+    setAudioFx((prev) => ({ ...prev, autoRadio: !prev.autoRadio }));
+  }, []);
+
+  const pickAutoRadioTrack = useCallback((): Track | null => {
+    const pool = allTracks && allTracks.length > 0 ? allTracks : tracks;
+    if (pool.length === 0) return null;
+    if (pool.length === 1) return pool[0];
+
+    const recent = new Set(recentRadioIdsRef.current);
+    let candidates = pool.filter(
+      (t) => t.id !== currentTrack?.id && !recent.has(t.id)
+    );
+    if (candidates.length === 0) {
+      candidates = pool.filter((t) => t.id !== currentTrack?.id);
+    }
+    if (candidates.length === 0) return pool[0];
+
+    // 35% chance to favor same artist when available
+    if (currentTrack && Math.random() < 0.35) {
+      const sameArtist = candidates.filter(
+        (t) => t.artist.toLowerCase() === currentTrack.artist.toLowerCase()
+      );
+      if (sameArtist.length > 0) {
+        return sameArtist[Math.floor(Math.random() * sameArtist.length)];
+      }
+    }
+    return candidates[Math.floor(Math.random() * candidates.length)];
+  }, [allTracks, tracks, currentTrack]);
+
   const getNextTrack = useCallback(
     (direction: 1 | -1): Track | null => {
       if (tracks.length === 0) return null;
@@ -338,13 +393,15 @@ export function useAudioEngine({
       const idx = tracks.findIndex((t) => t.id === currentTrack.id);
       if (idx === -1) return tracks[0];
 
-      const nextIdx = (idx + direction + tracks.length) % tracks.length;
-      if (direction === 1 && repeat === 'off' && idx === tracks.length - 1) {
-        return null;
+      if (direction === 1 && idx === tracks.length - 1) {
+        if (autoRadio) return null;
+        if (repeat === 'off') return null;
       }
+
+      const nextIdx = (idx + direction + tracks.length) % tracks.length;
       return tracks[nextIdx];
     },
-    [tracks, currentTrack, shuffle, repeat]
+    [tracks, currentTrack, shuffle, repeat, autoRadio]
   );
 
   const playTrack = useCallback(
@@ -353,6 +410,22 @@ export function useAudioEngine({
       if (!audio) return;
       ensureAudioGraph();
       clearPendingSeek();
+
+      const ctx = ctxRef.current;
+      const cfGain = crossfadeGainRef.current;
+      const wasPlayingDifferent =
+        !audio.paused && audio.src && audio.src !== track.fileUrl;
+      const useNaturalFadeIn = fadingOutNearEndRef.current && crossfadeSec > 0;
+      fadingOutNearEndRef.current = false;
+
+      if (ctx && cfGain && wasPlayingDifferent && crossfadeSec > 0 && !useNaturalFadeIn) {
+        // Gentle fast dip on manual skip when crossfade is enabled
+        const dip = Math.min(0.28, crossfadeSec * 0.15);
+        cfGain.gain.cancelScheduledValues(ctx.currentTime);
+        cfGain.gain.setValueAtTime(cfGain.gain.value, ctx.currentTime);
+        cfGain.gain.linearRampToValueAtTime(0.02, ctx.currentTime + dip);
+        await new Promise((r) => window.setTimeout(r, Math.round(dip * 1000)));
+      }
 
       if (audio.src !== track.fileUrl) {
         audio.src = track.fileUrl;
@@ -363,17 +436,47 @@ export function useAudioEngine({
       (audio as HTMLAudioElement & { preservesPitch?: boolean }).preservesPitch =
         audioFx.preservesPitch;
 
+      recentRadioIdsRef.current = [
+        track.id,
+        ...recentRadioIdsRef.current.filter((id) => id !== track.id),
+      ].slice(0, 18);
+
       onSelectTrack(track);
       onTrackStarted?.(track);
       try {
         await audio.play();
         setIsPlaying(true);
+        if (ctx && cfGain) {
+          cfGain.gain.cancelScheduledValues(ctx.currentTime);
+          if (crossfadeSec > 0 && (useNaturalFadeIn || wasPlayingDifferent)) {
+            const fadeInDur = useNaturalFadeIn
+              ? Math.min(crossfadeSec, 4)
+              : Math.min(1.2, crossfadeSec * 0.45);
+            cfGain.gain.setValueAtTime(0.02, ctx.currentTime);
+            cfGain.gain.linearRampToValueAtTime(1, ctx.currentTime + fadeInDur);
+          } else {
+            cfGain.gain.setValueAtTime(1, ctx.currentTime);
+          }
+        }
       } catch {
+        if (ctx && cfGain) {
+          cfGain.gain.cancelScheduledValues(ctx.currentTime);
+          cfGain.gain.setValueAtTime(1, ctx.currentTime);
+        }
         setIsPlaying(false);
         onPlaybackError?.(track);
       }
     },
-    [ensureAudioGraph, clearPendingSeek, onSelectTrack, onTrackStarted, onPlaybackError, audioFx.speed, audioFx.preservesPitch]
+    [
+      ensureAudioGraph,
+      clearPendingSeek,
+      onSelectTrack,
+      onTrackStarted,
+      onPlaybackError,
+      audioFx.speed,
+      audioFx.preservesPitch,
+      crossfadeSec,
+    ]
   );
 
   const togglePlay = useCallback(async () => {
@@ -454,12 +557,22 @@ export function useAudioEngine({
     const next = getNextTrack(1);
     if (next) {
       void playTrack(next);
-    } else if (audioRef.current) {
+      return;
+    }
+    if (autoRadio) {
+      const radioTrack = pickAutoRadioTrack();
+      if (radioTrack) {
+        onAutoRadioPick?.(radioTrack);
+        void playTrack(radioTrack);
+        return;
+      }
+    }
+    if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.currentTime = 0;
       setIsPlaying(false);
     }
-  }, [queueIds, tracks, allTracks, getNextTrack, playTrack]);
+  }, [queueIds, tracks, allTracks, getNextTrack, playTrack, autoRadio, pickAutoRadioTrack, onAutoRadioPick]);
 
   const prevTrack = useCallback(() => {
     const audio = audioRef.current;
@@ -478,11 +591,79 @@ export function useAudioEngine({
     const audio = audioRef.current;
     if (!audio) return;
 
-    const onTimeUpdate = () => setCurrentTime(audio.currentTime);
-    const onLoadedMetadata = () =>
+    const syncMediaPosition = () => {
+      if (
+        'mediaSession' in navigator &&
+        typeof navigator.mediaSession.setPositionState === 'function' &&
+        Number.isFinite(audio.duration) &&
+        audio.duration > 0
+      ) {
+        try {
+          navigator.mediaSession.setPositionState({
+            duration: audio.duration,
+            playbackRate: audio.playbackRate || 1,
+            position: Math.min(audio.duration, Math.max(0, audio.currentTime)),
+          });
+        } catch {
+          // Ignore browsers with strict position state validation
+        }
+      }
+    };
+
+    const onTimeUpdate = () => {
+      setCurrentTime(audio.currentTime);
+
+      if (audio.currentTime < 1.2 && fadingOutNearEndRef.current) {
+        fadingOutNearEndRef.current = false;
+        const ctx = ctxRef.current;
+        const cfGain = crossfadeGainRef.current;
+        if (ctx && cfGain) {
+          cfGain.gain.cancelScheduledValues(ctx.currentTime);
+          cfGain.gain.setValueAtTime(1, ctx.currentTime);
+        }
+      }
+
+      if (
+        crossfadeSec > 0 &&
+        !fadingOutNearEndRef.current &&
+        Number.isFinite(audio.duration) &&
+        audio.duration > crossfadeSec + 1.5 &&
+        repeat !== 'one' &&
+        !sleepAfterTrack
+      ) {
+        const remaining = audio.duration - audio.currentTime;
+        if (remaining > 0.1 && remaining <= crossfadeSec) {
+          fadingOutNearEndRef.current = true;
+          const ctx = ctxRef.current;
+          const cfGain = crossfadeGainRef.current;
+          if (ctx && cfGain) {
+            cfGain.gain.cancelScheduledValues(ctx.currentTime);
+            cfGain.gain.setValueAtTime(cfGain.gain.value, ctx.currentTime);
+            cfGain.gain.linearRampToValueAtTime(0.02, ctx.currentTime + remaining);
+          }
+        }
+      }
+
+      const now = Date.now();
+      if (now - lastPositionSyncRef.current >= 1000) {
+        lastPositionSyncRef.current = now;
+        syncMediaPosition();
+      }
+    };
+    const onLoadedMetadata = () => {
       setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
-    const onPlay = () => setIsPlaying(true);
-    const onPause = () => setIsPlaying(false);
+      syncMediaPosition();
+    };
+    const onPlay = () => {
+      setIsPlaying(true);
+      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
+      syncMediaPosition();
+    };
+    const onPause = () => {
+      setIsPlaying(false);
+      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
+      syncMediaPosition();
+    };
     const onEnded = () => {
       if (sleepAfterTrack) {
         setSleepAfterTrack(false);
@@ -510,7 +691,7 @@ export function useAudioEngine({
       audio.removeEventListener('pause', onPause);
       audio.removeEventListener('ended', onEnded);
     };
-  }, [repeat, sleepAfterTrack, nextTrack]);
+  }, [repeat, sleepAfterTrack, nextTrack, crossfadeSec]);
 
   useEffect(() => {
     if (!('mediaSession' in navigator) || !currentTrack) return;
@@ -520,13 +701,29 @@ export function useAudioEngine({
       album: currentTrack.album,
       artwork: currentTrack.coverUrl
         ? [{ src: currentTrack.coverUrl, sizes: '512x512', type: 'image/png' }]
-        : [],
+        : [{ src: '/icon.svg', sizes: '512x512', type: 'image/svg+xml' }],
     });
 
     navigator.mediaSession.setActionHandler('play', () => void togglePlay());
     navigator.mediaSession.setActionHandler('pause', () => void togglePlay());
     navigator.mediaSession.setActionHandler('previoustrack', prevTrack);
     navigator.mediaSession.setActionHandler('nexttrack', nextTrack);
+    navigator.mediaSession.setActionHandler('seekbackward', (details) => {
+      const offset = details.seekOffset ?? 10;
+      seek(Math.max(0, (audioRef.current?.currentTime ?? 0) - offset));
+    });
+    navigator.mediaSession.setActionHandler('seekforward', (details) => {
+      const offset = details.seekOffset ?? 10;
+      seek((audioRef.current?.currentTime ?? 0) + offset);
+    });
+    navigator.mediaSession.setActionHandler('stop', () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.currentTime = 0;
+        setIsPlaying(false);
+        setCurrentTime(0);
+      }
+    });
     navigator.mediaSession.setActionHandler('seekto', (details) => {
       if (typeof details.seekTime === 'number') {
         seek(details.seekTime);
@@ -623,6 +820,8 @@ export function useAudioEngine({
     eqPreamp,
     eqBands,
     audioFx,
+    autoRadio,
+    crossfadeSec,
     sleepAfterTrack,
     sleepRemainingSec,
     playTrack,
@@ -633,6 +832,7 @@ export function useAudioEngine({
     toggleMute,
     toggleShuffle,
     cycleRepeat,
+    toggleAutoRadio,
     nextTrack,
     prevTrack,
     enqueueTrack,

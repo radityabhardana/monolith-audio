@@ -139,6 +139,7 @@ export const AudioFxPanel: React.FC<AudioFxPanelProps> = ({
   const stereoWidth = audioFx.stereoWidth ?? 1;
   const compressor = Boolean(audioFx.compressor);
   const lowpassHz = audioFx.lowpassHz ?? 20000;
+  const crossfadeSec = audioFx.crossfadeSec ?? 0;
 
   const [customSleepMins, setCustomSleepMins] = useState(25);
   const rmsRef = useRef(0);
@@ -163,32 +164,37 @@ export const AudioFxPanel: React.FC<AudioFxPanelProps> = ({
     lowpassHz >= 19500;
 
   const applyMood = (mood: 'normal' | 'slowed' | 'nightcore' | 'lofi' | 'wide') => {
+    const baseReset: AudioFxSettings = {
+      ...DEFAULT_AUDIO_FX,
+      crossfadeSec: audioFx.crossfadeSec ?? 0,
+      autoRadio: audioFx.autoRadio ?? false,
+    };
     if (mood === 'normal') {
-      onChangeAudioFx(DEFAULT_AUDIO_FX);
+      onChangeAudioFx(baseReset);
       return;
     }
     if (mood === 'slowed') {
       onChangeAudioFx(
         isSlowedReverb
-          ? DEFAULT_AUDIO_FX
-          : { ...audioFx, speed: 0.85, preservesPitch: false, reverbMix: 0.35 }
+          ? baseReset
+          : { ...baseReset, speed: 0.85, preservesPitch: false, reverbMix: 0.35 }
       );
       return;
     }
     if (mood === 'nightcore') {
       onChangeAudioFx(
         isNightcore
-          ? DEFAULT_AUDIO_FX
-          : { ...audioFx, speed: 1.25, preservesPitch: false, reverbMix: 0.05 }
+          ? baseReset
+          : { ...baseReset, speed: 1.25, preservesPitch: false, reverbMix: 0.05 }
       );
       return;
     }
     if (mood === 'lofi') {
       onChangeAudioFx(
         isLofiTape
-          ? DEFAULT_AUDIO_FX
+          ? baseReset
           : {
-              ...audioFx,
+              ...baseReset,
               speed: 0.95,
               preservesPitch: true,
               reverbMix: 0.2,
@@ -200,8 +206,8 @@ export const AudioFxPanel: React.FC<AudioFxPanelProps> = ({
     }
     onChangeAudioFx(
       isWide3D
-        ? DEFAULT_AUDIO_FX
-        : { ...audioFx, stereoWidth: 1.5, reverbMix: 0.22 }
+        ? baseReset
+        : { ...baseReset, stereoWidth: 1.5, reverbMix: 0.22 }
     );
   };
 
@@ -385,8 +391,9 @@ export const AudioFxPanel: React.FC<AudioFxPanelProps> = ({
       { label: `Width ${Math.round(stereoWidth * 100)}%`, active: Math.abs(stereoWidth - 1) >= 0.05 },
       { label: `Reverb ${Math.round(audioFx.reverbMix * 100)}%`, active: audioFx.reverbMix > 0 },
       { label: `${audioFx.speed.toFixed(2)}×`, active: Math.abs(audioFx.speed - 1) >= 0.02 },
+      { label: crossfadeSec > 0 ? `Fade ${crossfadeSec}s` : 'Crossfade', active: crossfadeSec > 0 },
     ],
-    [audioFx.reverbMix, audioFx.speed, bands, bassBoost, compressor, enabled, lowpassHz, stereoWidth]
+    [audioFx.reverbMix, audioFx.speed, bands, bassBoost, compressor, crossfadeSec, enabled, lowpassHz, stereoWidth]
   );
 
   const activeNodeCount = signalChain.filter((s) => s.active).length;
@@ -800,6 +807,26 @@ export const AudioFxPanel: React.FC<AudioFxPanelProps> = ({
                   value={lowpassHz}
                   onChange={(e) =>
                     onChangeAudioFx({ ...audioFx, lowpassHz: parseFloat(e.target.value) })
+                  }
+                  className="w-full clean-range"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-zinc-400">DJ Crossfade Transition</span>
+                  <span className="font-mono text-zinc-200 tabular-nums">
+                    {crossfadeSec === 0 ? 'Off' : `${crossfadeSec}s`}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={10}
+                  step={1}
+                  value={crossfadeSec}
+                  onChange={(e) =>
+                    onChangeAudioFx({ ...audioFx, crossfadeSec: parseInt(e.target.value, 10) })
                   }
                   className="w-full clean-range"
                 />

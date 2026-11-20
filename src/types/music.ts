@@ -68,6 +68,8 @@ export interface AudioFxSettings {
   stereoWidth?: number;
   compressor?: boolean;
   lowpassHz?: number;
+  crossfadeSec?: number;
+  autoRadio?: boolean;
 }
 
 export type VisualizerMode = 'ascii-bars' | 'dot-matrix' | 'oscilloscope';
