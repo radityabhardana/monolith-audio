@@ -1,7 +1,7 @@
 import React from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
-  ArrowsInSimple,
+  CaretDown,
   Heart,
   Pause,
   Play,
@@ -109,12 +109,22 @@ export const ZenModeOverlay: React.FC<ZenModeOverlayProps> = ({
     <AnimatePresence>
       {open && (
         <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.25 }}
-          className="fixed inset-0 z-40 bg-[#070709] flex flex-col justify-between p-6 md:p-10 pt-18 overflow-hidden"
+          initial={{ y: '100%' }}
+          animate={{ y: '0%' }}
+          exit={{ y: '100%' }}
+          transition={{ duration: 0.44, ease: [0.32, 0.72, 0, 1] }}
+          className="fixed inset-0 z-40 bg-[#070709] border-t border-white/10 shadow-[0_-24px_64px_rgba(0,0,0,0.85)] flex flex-col justify-between p-6 md:p-10 pt-14 overflow-hidden will-change-transform"
         >
+          {/* Top Pull-Down Handle */}
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Tutup halaman detail lagu"
+            title="Tutup (Esc)"
+            className="absolute top-3 left-1/2 -translate-x-1/2 z-20 py-2 px-6 group cursor-pointer focus:outline-none"
+          >
+            <div className="w-11 h-1 rounded-full bg-white/25 group-hover:bg-white/55 transition-colors" />
+          </button>
           {/* Fullscreen WebGL Kawarp + Optional ASCII Overlay */}
           <KawarpBackdrop
             coverUrl={track?.coverUrl ?? null}
@@ -144,9 +154,9 @@ export const ZenModeOverlay: React.FC<ZenModeOverlayProps> = ({
               </button>
               <button
                 onClick={onClose}
-                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full smoked-glass text-xs text-zinc-200 hover:bg-white/10 transition"
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full smoked-glass text-xs text-zinc-200 hover:bg-white/10 transition cursor-pointer"
               >
-                <ArrowsInSimple size={14} />
+                <CaretDown size={14} weight="bold" />
                 <span>Close</span>
               </button>
             </div>

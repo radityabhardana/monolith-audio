@@ -3339,11 +3339,11 @@ export function App() {
         {/* Full-Width Bottom Glass Player Bar with Razor-Sharp Top Progress Line */}
         <footer
           onClick={(event) => {
-            // empty space in the player bar opens the fullscreen player
+            // empty space or track identity in the player bar opens the fullscreen player
             if ((event.target as HTMLElement).closest('button, a, input, [data-seek]')) return;
             setZenOpen(true);
           }}
-          className="relative h-[4.85rem] shrink-0 bg-[#09090d]/82 backdrop-blur-2xl border-t border-white/[0.1] shadow-[0_-12px_36px_rgba(0,0,0,0.55)] px-5 flex items-center justify-between gap-4"
+          className="relative h-[4.85rem] shrink-0 bg-[#09090d]/82 backdrop-blur-2xl border-t border-white/[0.1] shadow-[0_-12px_36px_rgba(0,0,0,0.55)] px-5 flex items-center justify-between gap-4 cursor-pointer"
         >
           {/* Interactive Full-Width Top Progress Strip */}
           <div
@@ -3384,7 +3384,6 @@ export function App() {
               accentColor={accent}
               tuner={initialPrefs.asciiTuner}
               size={44}
-              onCycleMode={cycleCoverMode}
               className="w-11 h-11 rounded-xl shrink-0"
             />
             <div className="min-w-0 hidden sm:block">
