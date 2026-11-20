@@ -1702,16 +1702,14 @@ export function App() {
         }
       }}
     >
-      {/* Calm Monochrome Sculptural Glass Backdrop */}
-      {!zenOpen && (
-        <KawarpBackdrop
-          coverUrl={currentTrack?.coverUrl ?? null}
-          accentColor={accent}
-          isPlaying={engine.isPlaying}
-          asciiOverlayEnabled={asciiOverlayEnabled}
-          getFrequencyData={engine.getFrequencyData}
-        />
-      )}
+      {/* Calm Monochrome Sculptural Glass Backdrop — stays mounted across Zen transitions */}
+      <KawarpBackdrop
+        coverUrl={currentTrack?.coverUrl ?? null}
+        accentColor={accent}
+        isPlaying={engine.isPlaying}
+        asciiOverlayEnabled={asciiOverlayEnabled}
+        getFrequencyData={engine.getFrequencyData}
+      />
 
       {/* Hidden File Pickers */}
       <input
@@ -1778,7 +1776,13 @@ export function App() {
       </AnimatePresence>
 
       {/* Fullscreen Unified Smoked-Glass Shell */}
-      <div className="relative z-10 w-full h-full glass-window overflow-hidden flex flex-col">
+      <div
+        className={`relative z-10 w-full h-full glass-window overflow-hidden flex flex-col transition-[transform,opacity,border-radius] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-transform ${
+          zenOpen
+            ? 'scale-[0.97] opacity-45 rounded-3xl pointer-events-none'
+            : 'scale-100 opacity-100'
+        }`}
+      >
         {/* Upper App Shell (Left Sidebar + Main View) */}
         <div className="flex-1 flex min-h-0 overflow-hidden">
           {/* Left Frosted Sidebar */}

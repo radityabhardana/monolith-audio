@@ -1,5 +1,5 @@
 import React from 'react';
-import { AnimatePresence, motion } from 'motion/react';
+import { motion } from 'motion/react';
 import {
   CaretDown,
   Heart,
@@ -22,7 +22,6 @@ import {
 import { formatTime } from '../utils/id3';
 import { AsciiVisualizer } from './AsciiVisualizer';
 import { DevaultArtworkCanvas } from './DevaultArtworkCanvas';
-import { KawarpBackdrop } from './KawarpBackdrop';
 import { LyricsPanel } from './LyricsPanel';
 
 interface ZenModeOverlayProps {
@@ -76,7 +75,7 @@ export const ZenModeOverlay: React.FC<ZenModeOverlayProps> = ({
   coverMode,
   visualizerMode,
   tuner,
-  asciiOverlayEnabled,
+  asciiOverlayEnabled: _asciiOverlayEnabled,
   slowedActive,
   getFrequencyData,
   getWaveformData,
@@ -106,34 +105,58 @@ export const ZenModeOverlay: React.FC<ZenModeOverlayProps> = ({
   };
 
   return (
-    <AnimatePresence>
-      {open && (
-        <motion.div
-          initial={{ y: '100%' }}
-          animate={{ y: '0%' }}
-          exit={{ y: '100%' }}
-          transition={{ duration: 0.44, ease: [0.32, 0.72, 0, 1] }}
-          className="fixed inset-0 z-40 bg-[#070709] border-t border-white/10 shadow-[0_-24px_64px_rgba(0,0,0,0.85)] flex flex-col justify-between p-6 md:p-10 pt-14 overflow-hidden will-change-transform"
-        >
-          {/* Top Pull-Down Handle */}
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Tutup halaman detail lagu"
-            title="Tutup (Esc)"
-            className="absolute top-3 left-1/2 -translate-x-1/2 z-20 py-2 px-6 group cursor-pointer focus:outline-none"
-          >
-            <div className="w-11 h-1 rounded-full bg-white/25 group-hover:bg-white/55 transition-colors" />
-          </button>
-          {/* Fullscreen WebGL Kawarp + Optional ASCII Overlay */}
-          <KawarpBackdrop
-            coverUrl={track?.coverUrl ?? null}
-            accentColor={accent}
-            isPlaying={isPlaying}
-            asciiOverlayEnabled={asciiOverlayEnabled}
-            getFrequencyData={getFrequencyData}
-          />
+    <div
+      className={`fixed inset-0 z-40 overflow-hidden ${
+        open ? 'pointer-events-auto' : 'pointer-events-none'
+      }`}
+      aria-hidden={!open}
+    >
+      {/* Dimming scrim synced with slide */}
+      <motion.div
+        initial={false}
+        animate={{ opacity: open ? 1 : 0 }}
+        transition={{ duration: 0.36, ease: [0.22, 1, 0.36, 1] }}
+        onClick={onClose}
+        className="absolute inset-0 bg-black/55 will-change-[opacity]"
+      />
 
+      {/* Persistent GPU-composited sliding sheet */}
+      <motion.div
+        initial={false}
+        animate={{
+          y: open ? '0%' : '102%',
+          borderTopLeftRadius: open ? '0px' : '28px',
+          borderTopRightRadius: open ? '0px' : '28px',
+        }}
+        transition={{ type: 'spring', stiffness: 320, damping: 34, mass: 0.82 }}
+        className="relative w-full h-full bg-[#07070a]/82 border-t border-white/10 shadow-[0_-24px_64px_rgba(0,0,0,0.85)] flex flex-col justify-between p-6 md:p-10 pt-14 overflow-hidden will-change-transform"
+      >
+        {/* Radial vignette letting persistent root KawarpBackdrop glow subtly through */}
+        <div
+          className="pointer-events-none absolute inset-0 z-0"
+          style={{
+            background: `radial-gradient(ellipse at 50% 24%, rgba(${accent.join(',')}, 0.14) 0%, rgba(7,7,10,0.58) 55%, rgba(4,4,6,0.9) 100%)`,
+          }}
+        />
+
+        {/* Top Pull-Down Handle */}
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Tutup halaman detail lagu"
+          title="Tutup (Esc)"
+          className="absolute top-3 left-1/2 -translate-x-1/2 z-20 py-2 px-6 group cursor-pointer focus:outline-none"
+        >
+          <div className="w-11 h-1 rounded-full bg-white/25 group-hover:bg-white/55 transition-colors" />
+        </button>
+
+        {/* Staggered Parallax Inner Content */}
+        <motion.div
+          initial={false}
+          animate={{ y: open ? 0 : 28, opacity: open ? 1 : 0 }}
+          transition={{ duration: 0.36, ease: [0.22, 1, 0.36, 1] }}
+          className="relative z-10 flex-1 flex flex-col justify-between min-h-0 will-change-transform"
+        >
           {/* Top Bar */}
           <div className="relative z-10 flex items-center justify-between gap-4 max-w-6xl w-full mx-auto">
             <span className="text-xs font-mono text-zinc-300/80">
@@ -177,7 +200,7 @@ export const ZenModeOverlay: React.FC<ZenModeOverlayProps> = ({
                   title={track?.title ?? 'No track'}
                   mode={coverMode}
                   accentColor={accent}
-                  isPlaying={isPlaying}
+                  isPlaying={open && isPlaying}
                   tuner={tuner}
                   getFrequencyData={getFrequencyData}
                   className="w-64 h-64 sm:w-80 sm:h-80 rounded-2xl shadow-2xl"
@@ -230,7 +253,7 @@ export const ZenModeOverlay: React.FC<ZenModeOverlayProps> = ({
               >
                 <AsciiVisualizer
                   mode={visualizerMode}
-                  isPlaying={isPlaying}
+                  isPlaying={open && isPlaying}
                   accentColor={accent}
                   getFrequencyData={getFrequencyData}
                   getWaveformData={getWaveformData}
@@ -302,7 +325,7 @@ export const ZenModeOverlay: React.FC<ZenModeOverlayProps> = ({
             </div>
           </div>
         </motion.div>
-      )}
-    </AnimatePresence>
+      </motion.div>
+    </div>
   );
 };
