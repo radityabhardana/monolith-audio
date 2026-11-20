@@ -44,10 +44,14 @@ export const LyricsPanel: React.FC<LyricsPanelProps> = ({
   }, [lyrics, currentTime, shift]);
 
   useEffect(() => {
-    if (!editing && activeLineRef.current && listRef.current) {
-      activeLineRef.current.scrollIntoView({
+    const list = listRef.current;
+    const line = activeLineRef.current;
+    if (!editing && line && list) {
+      const targetTop =
+        line.offsetTop - list.clientHeight / 2 + line.clientHeight / 2;
+      list.scrollTo({
+        top: Math.max(0, targetTop),
         behavior: 'smooth',
-        block: 'center',
       });
     }
   }, [activeIndex, editing]);
@@ -219,7 +223,7 @@ export const LyricsPanel: React.FC<LyricsPanelProps> = ({
       ) : (
         <div
           ref={listRef}
-          className="flex-1 overflow-y-auto py-4 space-y-2.5 pr-1 scroll-smooth"
+          className="relative flex-1 overflow-y-auto py-4 space-y-2.5 pr-1 scroll-smooth"
         >
           {lyrics.map((line, idx) => {
             const isActive = idx === activeIndex;
