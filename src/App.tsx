@@ -76,8 +76,10 @@ import {
 import {
   DEFAULT_AUDIO_FX,
   hasMeaningfulPreferences,
+  hasOnlyDefaultPlaylists,
   hasSavedLocalPreferences,
   isLocalOriginMigrated,
+  isUntouchedDefaultPlaylist,
   loadDiskPlayback,
   loadDiskPreferences,
   loadLocalFilesFromDB,
@@ -763,10 +765,11 @@ export function App() {
         keysByList.set(listId, keys);
       }
       if (keysByList.size > 0) {
-        if (
-          !diskExistedRef.current &&
-          !playlistsRef.current.some((pl) => Boolean(listIdOf(pl.source)))
-        ) {
+        const shouldRecoverFromManifest =
+          hasOnlyDefaultPlaylists(playlistsRef.current) ||
+          (!diskExistedRef.current &&
+            !playlistsRef.current.some((pl) => Boolean(listIdOf(pl.source))));
+        if (shouldRecoverFromManifest) {
           const baseTs = Date.now();
           const entries = Array.from(keysByList.entries());
           const recovered: Playlist[] = entries.map(([listId, keys], idx) => ({
@@ -779,24 +782,22 @@ export function App() {
             trackKeys: Array.from(new Set(keys)),
             createdAt: baseTs + idx,
           }));
-          const isUntouchedDefault = (p: Playlist) =>
-            p.id === 'pl-late-night' &&
-            p.name === 'Late Night Mix' &&
-            p.trackKeys.length === 0 &&
-            !p.source &&
-            !p.coverUrl;
-          const nextSnapshot = [
-            ...playlistsRef.current.filter((p) => !isUntouchedDefault(p)),
-            ...recovered,
-          ];
-          lastSavedPrefsJsonRef.current = JSON.stringify({
-            ...activePrefs,
-            playlists: nextSnapshot,
-          });
+          if (!diskExistedRef.current) {
+            const nextSnapshot = [
+              ...playlistsRef.current.filter((p) => !isUntouchedDefaultPlaylist(p)),
+              ...recovered,
+            ];
+            lastSavedPrefsJsonRef.current = JSON.stringify({
+              ...activePrefs,
+              playlists: nextSnapshot,
+            });
+          }
           setPlaylists((prev) => {
-            if (prev.some((pl) => Boolean(listIdOf(pl.source)))) return prev;
+            if (!hasOnlyDefaultPlaylists(prev) && prev.some((pl) => Boolean(listIdOf(pl.source)))) {
+              return prev;
+            }
             return [
-              ...prev.filter((p) => !isUntouchedDefault(p)),
+              ...prev.filter((p) => !isUntouchedDefaultPlaylist(p)),
               ...recovered,
             ];
           });

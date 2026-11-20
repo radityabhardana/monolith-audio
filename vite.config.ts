@@ -475,6 +475,34 @@ function playlistBridge(): Plugin {
           return;
         }
         try {
+          if (existsSync(STATE_FILE)) {
+            try {
+              const existing = JSON.parse(readFileSync(STATE_FILE, 'utf8'));
+              const existingPlaylists = Array.isArray(existing?.playlists)
+                ? (existing.playlists as Array<Record<string, unknown>>)
+                : [];
+              const incomingPlaylists = (data as Record<string, unknown>)
+                .playlists as Array<Record<string, unknown>>;
+
+              const existingHasCustom = existingPlaylists.some(
+                (p) =>
+                  p.id !== 'pl-late-night' ||
+                  (Array.isArray(p.trackKeys) && p.trackKeys.length > 0)
+              );
+              const incomingOnlyDefault =
+                incomingPlaylists.length === 0 ||
+                (incomingPlaylists.length === 1 &&
+                  incomingPlaylists[0].id === 'pl-late-night' &&
+                  (!Array.isArray(incomingPlaylists[0].trackKeys) ||
+                    incomingPlaylists[0].trackKeys.length === 0));
+
+              if (existingHasCustom && incomingOnlyDefault) {
+                (data as Record<string, unknown>).playlists = existingPlaylists;
+              }
+            } catch {
+              // Ignore read/parse error on existing file
+            }
+          }
           writeJsonAtomic(STATE_FILE, data);
           json(res, 200, { ok: true });
         } catch (error) {

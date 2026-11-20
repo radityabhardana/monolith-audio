@@ -191,7 +191,7 @@ function extractListId(url?: string): string | null {
   return match ? match[1] : null;
 }
 
-function isUntouchedDefaultPlaylist(pl: Playlist): boolean {
+export function isUntouchedDefaultPlaylist(pl: Playlist): boolean {
   return (
     pl.id === 'pl-late-night' &&
     pl.name === 'Late Night Mix' &&
@@ -199,6 +199,10 @@ function isUntouchedDefaultPlaylist(pl: Playlist): boolean {
     !pl.source &&
     !pl.coverUrl
   );
+}
+
+export function hasOnlyDefaultPlaylists(playlists: Playlist[]): boolean {
+  return playlists.length === 1 && isUntouchedDefaultPlaylist(playlists[0]);
 }
 
 export function mergePreferences(
@@ -226,7 +230,11 @@ export function mergePreferences(
       const combinedKeys = Array.from(
         new Set([...lpl.trackKeys, ...existing.trackKeys])
       );
-      if (existing.id.startsWith('pl-yt-') && !lpl.id.startsWith('pl-yt-')) {
+      if (
+        (existing.id.startsWith('pl-yt-') || isUntouchedDefaultPlaylist(existing)) &&
+        !lpl.id.startsWith('pl-yt-') &&
+        !isUntouchedDefaultPlaylist(lpl)
+      ) {
         merged[existingIdx] = {
           ...existing,
           id: lpl.id,
@@ -281,6 +289,9 @@ export function mergePreferences(
     .sort((a, b) => b.playedAt - a.playedAt)
     .slice(0, 50);
 
+  const shouldUseLocalEq =
+    disk.eqGains.every((g) => g === 0) && local.eqGains.some((g) => g !== 0);
+
   return normalizePreferences({
     ...disk,
     playlists: finalPlaylists,
@@ -291,6 +302,13 @@ export function mergePreferences(
     metadataOverrides,
     playCounts,
     history,
+    ...(shouldUseLocalEq
+      ? {
+          eqGains: local.eqGains,
+          eqPreamp: local.eqPreamp,
+          eqEnabled: local.eqEnabled,
+        }
+      : {}),
   });
 }
 
