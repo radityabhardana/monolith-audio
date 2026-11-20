@@ -21,7 +21,7 @@ type SyncStatus = {
   ids?: string[];
 };
 
-const YOUTUBE_URL = /^https?:\/\/(music\.)?youtube\.com\//i;
+const YOUTUBE_URL = /^https?:\/\/(?:www\.)?(?:music\.)?youtube\.com\//i;
 const POLL_MS = 800;
 
 function samePlaylistUrl(a?: string, b?: string): boolean {
@@ -81,6 +81,7 @@ export const PlaylistSource: React.FC<PlaylistSourceProps> = ({
   }, []);
 
   const pollStatus = useCallback(() => {
+    stopPolling();
     pollTimerRef.current = window.setTimeout(async () => {
       try {
         const res = await fetch('/api/sync/status', { cache: 'no-store' });
@@ -116,7 +117,7 @@ export const PlaylistSource: React.FC<PlaylistSourceProps> = ({
         setMessage('Tidak bisa menghubungi bridge lokal');
       }
     }, POLL_MS);
-  }, [applyRunningStatus, onSynced, playlistId]);
+  }, [applyRunningStatus, onSynced, playlistId, stopPolling]);
 
   // Re-attach progress bar & polling if this playlist's download is already running
   // (e.g. after switching playlists or refreshing the page).

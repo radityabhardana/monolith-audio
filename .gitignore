@@ -10,6 +10,8 @@ scripts/playlist.txt
 scripts/downloaded_ids.json
 scripts/lyrics.json
 scripts/sync_status.json
+scripts/app_state.json
+scripts/playback_state.json
 scripts/sync.log
 scripts/*.tmp
 scripts/__pycache__/

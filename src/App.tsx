@@ -56,6 +56,7 @@ import {
   SortMode,
   Track,
   TrackMetadataOverride,
+  UserPreferences,
   VisualizerMode,
 } from './types/music';
 import { fetchInboxManifest, listIdOf, syncInbox } from './utils/inboxSync';
@@ -74,10 +75,19 @@ import {
 } from './utils/id3';
 import {
   DEFAULT_AUDIO_FX,
+  hasMeaningfulPreferences,
+  hasSavedLocalPreferences,
+  isLocalOriginMigrated,
+  loadDiskPlayback,
+  loadDiskPreferences,
   loadLocalFilesFromDB,
   loadPlayback,
   loadPreferences,
+  markLocalOriginMigrated,
+  mergePreferences,
   removeLocalFileFromDB,
+  saveDiskPlayback,
+  saveDiskPreferences,
   saveLocalFilesToDB,
   savePlayback,
   savePreferences,
@@ -99,8 +109,25 @@ function stripExtension(name: string): string {
   return name.replace(/\.[^/.]+$/, '').toLowerCase().trim();
 }
 
+function revokeTrackUrls(track: Track): void {
+  if (track.fileUrl.startsWith('blob:')) URL.revokeObjectURL(track.fileUrl);
+  if (track.coverUrl?.startsWith('blob:')) URL.revokeObjectURL(track.coverUrl);
+}
+
 export function App() {
+  const initialHasLocalPrefs = useMemo(() => hasSavedLocalPreferences(), []);
   const initialPrefs = useMemo(() => loadPreferences(), []);
+  const asciiTunerRef = useRef(initialPrefs.asciiTuner);
+
+  const [diskStateReady, setDiskStateReady] = useState(false);
+  const diskStateReadyRef = useRef(false);
+  diskStateReadyRef.current = diskStateReady;
+  const diskAvailableRef = useRef(false);
+  const diskExistedRef = useRef(false);
+  const lastSavedPrefsJsonRef = useRef<string>('');
+  const pendingDiskPrefsRef = useRef<UserPreferences | null>(null);
+  const diskSaveTimerRef = useRef<number | null>(null);
+  const lastSavedPlaybackKeyRef = useRef<string>('');
 
   const [tracks, setTracks] = useState<Track[]>([]);
   const [libraryLoading, setLibraryLoading] = useState(true);
@@ -272,6 +299,41 @@ export function App() {
   );
 
   // remember where the user was so a refresh keeps the song + position, paused
+  const engineHydrateRef = useRef({
+    setVolume: engine.setVolume,
+    setEqEnabled: engine.setEqEnabled,
+    setEqPreamp: engine.setEqPreamp,
+    setEqGains: engine.setEqGains,
+    setAudioFx: engine.setAudioFx,
+  });
+  engineHydrateRef.current = {
+    setVolume: engine.setVolume,
+    setEqEnabled: engine.setEqEnabled,
+    setEqPreamp: engine.setEqPreamp,
+    setEqGains: engine.setEqGains,
+    setAudioFx: engine.setAudioFx,
+  };
+
+  const applyPreferences = useCallback((prefs: UserPreferences) => {
+    setLikedKeys(prefs.likedKeys);
+    setHiddenDemoKeys(prefs.hiddenDemoKeys);
+    setPlaylists(prefs.playlists);
+    playlistsRef.current = prefs.playlists;
+    setCustomLyrics(prefs.customLyrics);
+    setLyricOffsets(prefs.lyricOffsets ?? {});
+    setMetadataOverrides(prefs.metadataOverrides);
+    setHistory(prefs.history);
+    setPlayCounts(prefs.playCounts || {});
+    setVisualizerMode(prefs.visualizerMode);
+    setCoverMode(prefs.coverMode);
+    asciiTunerRef.current = prefs.asciiTuner;
+    engineHydrateRef.current.setVolume(prefs.volume);
+    engineHydrateRef.current.setEqEnabled(prefs.eqEnabled);
+    engineHydrateRef.current.setEqPreamp(prefs.eqPreamp);
+    engineHydrateRef.current.setEqGains(prefs.eqGains);
+    engineHydrateRef.current.setAudioFx(prefs.audioFx);
+  }, []);
+
   const loadPausedRef = useRef(engine.loadPaused);
   loadPausedRef.current = engine.loadPaused;
   const playbackRef = useRef<{ key: string; time: number; playlistId?: string }>({
@@ -285,14 +347,26 @@ export function App() {
   };
 
   useEffect(() => {
-    const persist = () => {
+    const persist = (isUnload: boolean) => {
+      if (!diskStateReadyRef.current) return;
       const { key, time, playlistId } = playbackRef.current;
-      if (key) savePlayback({ key, time, playlistId });
+      if (!key) return;
+      const sig = `${key}|${Math.floor(time)}|${playlistId ?? ''}`;
+      if (sig === lastSavedPlaybackKeyRef.current) return;
+      lastSavedPlaybackKeyRef.current = sig;
+      const payload = { key, time, playlistId };
+      savePlayback(payload);
+      if (diskAvailableRef.current) {
+        void saveDiskPlayback(payload, { beacon: isUnload });
+      }
     };
-    window.addEventListener('beforeunload', persist);
-    const timer = window.setInterval(persist, 3000);
+    const onUnload = () => persist(true);
+    window.addEventListener('beforeunload', onUnload);
+    window.addEventListener('pagehide', onUnload);
+    const timer = window.setInterval(() => persist(false), 3000);
     return () => {
-      window.removeEventListener('beforeunload', persist);
+      window.removeEventListener('beforeunload', onUnload);
+      window.removeEventListener('pagehide', onUnload);
       window.clearInterval(timer);
     };
   }, []);
@@ -303,7 +377,8 @@ export function App() {
   }, [currentTrack]);
 
   useEffect(() => {
-    savePreferences({
+    if (!diskStateReady) return;
+    const nextPrefs: UserPreferences = {
       likedKeys,
       hiddenDemoKeys,
       playlists,
@@ -318,11 +393,34 @@ export function App() {
       audioFx: engine.audioFx,
       visualizerMode,
       coverMode,
-      asciiTuner: initialPrefs.asciiTuner,
+      asciiTuner: asciiTunerRef.current,
       volume: engine.volume,
       asciiOverlayEnabled,
-    });
+    };
+    savePreferences(nextPrefs);
+
+    if (!diskAvailableRef.current) return;
+    const jsonStr = JSON.stringify(nextPrefs);
+    if (jsonStr === lastSavedPrefsJsonRef.current) return;
+
+    pendingDiskPrefsRef.current = nextPrefs;
+    if (diskSaveTimerRef.current !== null) {
+      window.clearTimeout(diskSaveTimerRef.current);
+    }
+    diskSaveTimerRef.current = window.setTimeout(() => {
+      diskSaveTimerRef.current = null;
+      const toSave = pendingDiskPrefsRef.current;
+      if (!toSave) return;
+      pendingDiskPrefsRef.current = null;
+      void saveDiskPreferences(toSave).then((ok) => {
+        if (ok) {
+          lastSavedPrefsJsonRef.current = jsonStr;
+          diskExistedRef.current = true;
+        }
+      });
+    }, 350);
   }, [
+    diskStateReady,
     likedKeys,
     hiddenDemoKeys,
     playlists,
@@ -339,8 +437,31 @@ export function App() {
     visualizerMode,
     coverMode,
     asciiOverlayEnabled,
-    initialPrefs.asciiTuner,
   ]);
+
+  useEffect(() => {
+    const flushPendingDiskPrefs = () => {
+      if (!diskAvailableRef.current || !pendingDiskPrefsRef.current) return;
+      if (diskSaveTimerRef.current !== null) {
+        window.clearTimeout(diskSaveTimerRef.current);
+        diskSaveTimerRef.current = null;
+      }
+      const prefs = pendingDiskPrefsRef.current;
+      pendingDiskPrefsRef.current = null;
+      lastSavedPrefsJsonRef.current = JSON.stringify(prefs);
+      diskExistedRef.current = true;
+      void saveDiskPreferences(prefs, { keepalive: true });
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') flushPendingDiskPrefs();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pagehide', flushPendingDiskPrefs);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pagehide', flushPendingDiskPrefs);
+    };
+  }, []);
 
   const buildTrackFromFile = useCallback(
     async (
@@ -388,7 +509,16 @@ export function App() {
         setTracks((prev) => {
           // init may have loaded the same files while this ran; never list twice
           const known = new Set(prev.map((t) => t.key));
-          return [...synced.filter((t) => !known.has(t.key)), ...prev];
+          const unique: Track[] = [];
+          for (const t of synced) {
+            if (known.has(t.key)) {
+              revokeTrackUrls(t);
+            } else {
+              known.add(t.key);
+              unique.push(t);
+            }
+          }
+          return unique.length > 0 ? [...unique, ...prev] : prev;
         });
         setCurrentTrackId((prev) => prev ?? synced[0]?.id ?? null);
       }
@@ -479,11 +609,53 @@ export function App() {
     let cancelled = false;
     setLibraryLoading(true);
     const init = async () => {
-      const stored = await loadLocalFilesFromDB();
-      if (cancelled) {
-        setLibraryLoading(false);
-        return;
+      const [diskState, diskPlayback] = await Promise.all([
+        loadDiskPreferences(),
+        loadDiskPlayback(),
+      ]);
+      if (cancelled) return;
+
+      diskAvailableRef.current = diskState.available;
+      diskExistedRef.current = diskState.exists;
+
+      let activePrefs = initialPrefs;
+      if (diskState.available && diskState.exists && diskState.prefs) {
+        if (
+          !isLocalOriginMigrated() &&
+          initialHasLocalPrefs &&
+          hasMeaningfulPreferences(initialPrefs)
+        ) {
+          activePrefs = mergePreferences(diskState.prefs, initialPrefs);
+          applyPreferences(activePrefs);
+          savePreferences(activePrefs);
+          const ok = await saveDiskPreferences(activePrefs);
+          if (cancelled) return;
+          if (ok) markLocalOriginMigrated();
+          showToast('Playlist & preferensi dari port ini digabungkan ke proyek');
+        } else {
+          activePrefs = diskState.prefs;
+          applyPreferences(activePrefs);
+          savePreferences(activePrefs);
+          markLocalOriginMigrated();
+        }
+        lastSavedPrefsJsonRef.current = JSON.stringify(activePrefs);
+      } else if (diskState.available && !diskState.exists) {
+        if (initialHasLocalPrefs && hasMeaningfulPreferences(initialPrefs)) {
+          const ok = await saveDiskPreferences(initialPrefs);
+          if (cancelled) return;
+          if (ok) {
+            diskExistedRef.current = true;
+            markLocalOriginMigrated();
+            showToast('Playlist & preferensi disinkronkan ke proyek lokal');
+          }
+        }
+        lastSavedPrefsJsonRef.current = JSON.stringify(activePrefs);
       }
+
+      setDiskStateReady(true);
+
+      const stored = await loadLocalFilesFromDB();
+      if (cancelled) return;
 
       // pooled restore: 98 sequential mp3 decodes kept the library empty for ~33s
       const restored: (Track | null)[] = new Array(stored.length).fill(null);
@@ -494,10 +666,14 @@ export function App() {
           if (index >= stored.length) return;
           const item = stored[index];
           const track = await buildTrackFromFile(item.file, item.key, item.addedAt);
-          if (cancelled) return;
+          if (cancelled) {
+            revokeTrackUrls(track);
+            return;
+          }
           // unreadable metadata means a corrupt/partial blob: drop the DB entry
           // so syncInbox re-imports it from the inbox manifest
           if (!Number.isFinite(track.duration) || track.duration <= 0) {
+            revokeTrackUrls(track);
             await removeLocalFileFromDB(item.key);
             continue;
           }
@@ -507,10 +683,19 @@ export function App() {
       await Promise.all(
         Array.from({ length: Math.min(6, stored.length) }, () => restoreWorker())
       );
-      if (cancelled) return;
+      if (cancelled) {
+        for (const t of restored) {
+          if (t) revokeTrackUrls(t);
+        }
+        return;
+      }
 
       const combined = restored.filter((t): t is Track => t !== null);
       const manifest = await fetchInboxManifest();
+      if (cancelled) {
+        for (const t of combined) revokeTrackUrls(t);
+        return;
+      }
       const manifestByKey = new Map(
         manifest.map((entry) => [`yt::${entry.id}`, entry])
       );
@@ -524,10 +709,19 @@ export function App() {
           existing.delete(key);
         }
       }
-      const kept = combined.filter((t) => existing.has(t.key));
-      const synced = await syncInbox(existing, buildTrackFromFile);
+      const kept: Track[] = [];
+      for (const t of combined) {
+        if (existing.has(t.key)) kept.push(t);
+        else revokeTrackUrls(t);
+      }
+      const synced = await syncInbox(
+        existing,
+        buildTrackFromFile,
+        () => cancelled
+      );
       if (cancelled) {
-        setLibraryLoading(false);
+        for (const t of kept) revokeTrackUrls(t);
+        for (const t of synced) revokeTrackUrls(t);
         return;
       }
       // the manifest carries the real titles from YouTube, so they survive a
@@ -544,36 +738,87 @@ export function App() {
           lyrics: entry.lyrics ? parseLrc(entry.lyrics) : track.lyrics,
         };
       });
-      setTracks(all);
+      setTracks((prev) => {
+        if (prev.length === 0) return all;
+        const loadedKeys = new Set(all.map((t) => t.key));
+        const extra = prev.filter((t) => !loadedKeys.has(t.key));
+        return extra.length > 0 ? [...extra, ...all] : all;
+      });
       setLibraryLoading(false);
       // membership comes from the inbox itself: a sync that finished while this
       // tab was closed never reached handleSynced, so its playlist would stay
       // empty even though the files are already in the library
       const known = new Set(all.map((t) => t.key));
       const keysByList = new Map<string, string[]>();
+      const sourceUrlByList = new Map<string, string>();
       for (const entry of manifest) {
         const listId = listIdOf(entry.source);
         const key = `yt::${entry.id}`;
         if (!listId || !known.has(key)) continue;
+        if (entry.source && !sourceUrlByList.has(listId)) {
+          sourceUrlByList.set(listId, entry.source);
+        }
         const keys = keysByList.get(listId) ?? [];
         keys.push(key);
         keysByList.set(listId, keys);
       }
       if (keysByList.size > 0) {
-        setPlaylists((prev) => {
-          let changed = false;
-          const next = prev.map((pl) => {
-            const extra = keysByList.get(listIdOf(pl.source) ?? '');
-            if (!extra) return pl;
-            const merged = new Set([...pl.trackKeys, ...extra]);
-            if (merged.size === pl.trackKeys.length) return pl;
-            changed = true;
-            return { ...pl, trackKeys: [...merged] };
+        if (
+          !diskExistedRef.current &&
+          !playlistsRef.current.some((pl) => Boolean(listIdOf(pl.source)))
+        ) {
+          const baseTs = Date.now();
+          const entries = Array.from(keysByList.entries());
+          const recovered: Playlist[] = entries.map(([listId, keys], idx) => ({
+            id: `pl-yt-${listId}`,
+            name:
+              entries.length === 1
+                ? 'YouTube Playlist'
+                : `YouTube Playlist ${idx + 1}`,
+            source: sourceUrlByList.get(listId),
+            trackKeys: Array.from(new Set(keys)),
+            createdAt: baseTs + idx,
+          }));
+          const isUntouchedDefault = (p: Playlist) =>
+            p.id === 'pl-late-night' &&
+            p.name === 'Late Night Mix' &&
+            p.trackKeys.length === 0 &&
+            !p.source &&
+            !p.coverUrl;
+          const nextSnapshot = [
+            ...playlistsRef.current.filter((p) => !isUntouchedDefault(p)),
+            ...recovered,
+          ];
+          lastSavedPrefsJsonRef.current = JSON.stringify({
+            ...activePrefs,
+            playlists: nextSnapshot,
           });
-          return changed ? next : prev;
-        });
+          setPlaylists((prev) => {
+            if (prev.some((pl) => Boolean(listIdOf(pl.source)))) return prev;
+            return [
+              ...prev.filter((p) => !isUntouchedDefault(p)),
+              ...recovered,
+            ];
+          });
+        } else {
+          setPlaylists((prev) => {
+            let changed = false;
+            const next = prev.map((pl) => {
+              const extra = keysByList.get(listIdOf(pl.source) ?? '');
+              if (!extra) return pl;
+              const merged = new Set([...pl.trackKeys, ...extra]);
+              if (merged.size === pl.trackKeys.length) return pl;
+              changed = true;
+              return { ...pl, trackKeys: [...merged] };
+            });
+            return changed ? next : prev;
+          });
+        }
       }
-      const saved = loadPlayback();
+      const saved = diskPlayback.playback ?? loadPlayback();
+      if (saved) {
+        lastSavedPlaybackKeyRef.current = `${saved.key}|${Math.floor(saved.time)}|${saved.playlistId ?? ''}`;
+      }
       const resume = saved ? all.find((t) => t.key === saved.key) : undefined;
       setCurrentTrackId((prev) => prev ?? resume?.id ?? all[0]?.id ?? null);
       if (saved && resume) {
@@ -596,7 +841,13 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [buildTrackFromFile, initialPrefs.hiddenDemoKeys]);
+  }, [
+    applyPreferences,
+    buildTrackFromFile,
+    initialHasLocalPrefs,
+    initialPrefs,
+    showToast,
+  ]);
 
   const ingestImportedItems = useCallback(
     async (items: ImportedFileItem[]) => {
@@ -619,7 +870,7 @@ export function App() {
       if (audioItems.length === 0 && lrcItems.length > 0) {
         let matchedCount = 0;
         for (const [baseName, lines] of lrcMap.entries()) {
-          const match = tracks.find(
+          const match = tracksRef.current.find(
             (t) => t.fileName && stripExtension(t.fileName) === baseName
           );
           if (match) {
@@ -645,7 +896,7 @@ export function App() {
       }
 
       setImportingCount(audioItems.length);
-      const existingKeys = new Set(tracks.map((t) => t.key));
+      const existingKeys = new Set(tracksRef.current.map((t) => t.key));
       const addedTracks: Track[] = [];
       const toStore: StoredLocalFile[] = [];
       const folderGroups = new Map<string, string[]>();
@@ -686,18 +937,43 @@ export function App() {
       }
 
       if (addedTracks.length > 0) {
-        setTracks((prev) => [...addedTracks, ...prev]);
+        setTracks((prev) => {
+          const known = new Set(prev.map((t) => t.key));
+          const unique: Track[] = [];
+          for (const t of addedTracks) {
+            if (known.has(t.key)) {
+              revokeTrackUrls(t);
+            } else {
+              known.add(t.key);
+              unique.push(t);
+            }
+          }
+          return unique.length > 0 ? [...unique, ...prev] : prev;
+        });
         setCurrentTrackId(addedTracks[0].id);
       }
 
       if (folderGroups.size > 0) {
+        const nowTs = Date.now();
+        let idxCounter = 0;
+        const plannedIds = new Map<string, string>();
         let firstPlaylistId: string | null = null;
         let firstFolderName = '';
 
+        for (const [folderName] of folderGroups.entries()) {
+          const existing = playlistsRef.current.find(
+            (p) => p.name.toLowerCase() === folderName.toLowerCase()
+          );
+          const id = existing ? existing.id : `pl-dir-${nowTs}-${idxCounter++}`;
+          plannedIds.set(folderName, id);
+          if (!firstPlaylistId) {
+            firstPlaylistId = id;
+            firstFolderName = existing ? existing.name : folderName;
+          }
+        }
+
         setPlaylists((prev) => {
           const updated = [...prev];
-          let idxCounter = 0;
-
           for (const [folderName, keys] of folderGroups.entries()) {
             const existingIdx = updated.findIndex(
               (p) => p.name.toLowerCase() === folderName.toLowerCase()
@@ -707,22 +983,13 @@ export function App() {
               const existing = updated[existingIdx];
               const merged = Array.from(new Set([...existing.trackKeys, ...keys]));
               updated[existingIdx] = { ...existing, trackKeys: merged };
-              if (!firstPlaylistId) {
-                firstPlaylistId = existing.id;
-                firstFolderName = existing.name;
-              }
             } else {
-              const newPl: Playlist = {
-                id: `pl-dir-${Date.now()}-${idxCounter++}`,
+              updated.push({
+                id: plannedIds.get(folderName) ?? `pl-dir-${nowTs}-${idxCounter++}`,
                 name: folderName,
                 trackKeys: keys,
-                createdAt: Date.now(),
-              };
-              updated.push(newPl);
-              if (!firstPlaylistId) {
-                firstPlaylistId = newPl.id;
-                firstFolderName = newPl.name;
-              }
+                createdAt: nowTs,
+              });
             }
           }
           return updated;
@@ -750,7 +1017,7 @@ export function App() {
 
       setImportingCount(0);
     },
-    [tracks, currentTrack, buildTrackFromFile, showToast]
+    [currentTrack, buildTrackFromFile, showToast]
   );
 
   const handleToggleLike = useCallback((trackKey: string) => {
@@ -1041,10 +1308,12 @@ export function App() {
   }, [zenOpen, paletteOpen, editingTrack, confirmDialog, engine, cycleCoverMode, cycleVisualizerMode]);
 
   const displayedTracks = useMemo(() => {
-    let list = navSection === 'playlist' ? hydratedTracks : libraryTracks;
-    // Home doubles as the full library view: it mixes the user's own files with
-    // everything synced from their playlists (Albums/Artists/Liked stay curated)
-    if (navSection === 'library') list = hydratedTracks;
+    let list =
+      navSection === 'playlist' || navSection === 'library' || navSection === 'liked'
+        ? hydratedTracks
+        : libraryTracks;
+    // Home and Liked Songs span both local files and synced playlists;
+    // Albums and Artists stay curated to user-added local files
     if (navSection === 'liked') {
       list = list.filter((t) => t.liked);
     } else if (navSection === 'history') {
@@ -1335,13 +1604,15 @@ export function App() {
       }}
     >
       {/* Calm Monochrome Sculptural Glass Backdrop */}
-      <KawarpBackdrop
-        coverUrl={currentTrack?.coverUrl ?? null}
-        accentColor={accent}
-        isPlaying={engine.isPlaying}
-        asciiOverlayEnabled={asciiOverlayEnabled}
-        getFrequencyData={engine.getFrequencyData}
-      />
+      {!zenOpen && (
+        <KawarpBackdrop
+          coverUrl={currentTrack?.coverUrl ?? null}
+          accentColor={accent}
+          isPlaying={engine.isPlaying}
+          asciiOverlayEnabled={asciiOverlayEnabled}
+          getFrequencyData={engine.getFrequencyData}
+        />
+      )}
 
       {/* Hidden File Pickers */}
       <input
@@ -1439,7 +1710,7 @@ export function App() {
                   { id: 'library' as const, label: 'Home', icon: House, count: hydratedTracks.length },
                   { id: 'albums' as const, label: 'Albums', icon: Disc, count: albums.length },
                   { id: 'artists' as const, label: 'Artists', icon: User, count: artists.length },
-                  { id: 'liked' as const, label: 'Liked Songs', icon: Heart, count: libraryTracks.filter((t) => t.liked).length },
+                  { id: 'liked' as const, label: 'Liked Songs', icon: Heart, count: hydratedTracks.filter((t) => t.liked).length },
                   { id: 'history' as const, label: 'Recent', icon: ClockCounterClockwise, count: history.length },
                 ].map((item) => {
                   const Icon = item.icon;

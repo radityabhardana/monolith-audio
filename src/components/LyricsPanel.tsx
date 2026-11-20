@@ -231,7 +231,7 @@ export const LyricsPanel: React.FC<LyricsPanelProps> = ({
 
             // Word-by-word karaoke sweep for active line (Liner signature)
             const words = line.words?.length
-              ? line.words
+              ? line.words.map((w) => ({ ...w, time: w.time + shift }))
               : line.text.split(/\s+/).map((word, wIdx, arr) => ({
                   text: word,
                   time:
@@ -244,7 +244,7 @@ export const LyricsPanel: React.FC<LyricsPanelProps> = ({
               <button
                 key={`${line.time}-${idx}`}
                 ref={isActive ? activeLineRef : null}
-                onClick={() => onSeek(line.time + shift)}
+                onClick={() => onSeek(Math.max(0, line.time + shift))}
                 className={`w-full text-left px-3 py-2 rounded-xl transition-all duration-300 block ${
                   isActive ? 'glass-inner-card' : 'hover:bg-white/[0.05]'
                 }`}

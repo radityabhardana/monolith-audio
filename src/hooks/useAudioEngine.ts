@@ -81,6 +81,12 @@ export function useAudioEngine({
   const dryGainRef = useRef<GainNode | null>(null);
   const wetGainRef = useRef<GainNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
+  const pendingSeekCleanupRef = useRef<(() => void) | null>(null);
+
+  const clearPendingSeek = useCallback(() => {
+    pendingSeekCleanupRef.current?.();
+    pendingSeekCleanupRef.current = null;
+  }, []);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -346,6 +352,7 @@ export function useAudioEngine({
       const audio = audioRef.current;
       if (!audio) return;
       ensureAudioGraph();
+      clearPendingSeek();
 
       if (audio.src !== track.fileUrl) {
         audio.src = track.fileUrl;
@@ -366,7 +373,7 @@ export function useAudioEngine({
         onPlaybackError?.(track);
       }
     },
-    [ensureAudioGraph, onSelectTrack, onTrackStarted, onPlaybackError, audioFx.speed, audioFx.preservesPitch]
+    [ensureAudioGraph, clearPendingSeek, onSelectTrack, onTrackStarted, onPlaybackError, audioFx.speed, audioFx.preservesPitch]
   );
 
   const togglePlay = useCallback(async () => {
@@ -381,6 +388,7 @@ export function useAudioEngine({
 
     ensureAudioGraph();
     if (audio.src !== currentTrack.fileUrl) {
+      clearPendingSeek();
       audio.src = currentTrack.fileUrl;
       audio.load();
     }
@@ -397,35 +405,40 @@ export function useAudioEngine({
       audio.pause();
       setIsPlaying(false);
     }
-  }, [currentTrack, tracks, playTrack, ensureAudioGraph, onPlaybackError]);
+  }, [currentTrack, tracks, playTrack, ensureAudioGraph, clearPendingSeek, onPlaybackError]);
 
   const seek = useCallback((timeSec: number) => {
     const audio = audioRef.current;
     if (!audio || !Number.isFinite(timeSec)) return;
+    clearPendingSeek();
     const clamped = Math.max(0, Math.min(timeSec, audio.duration || timeSec));
     audio.currentTime = clamped;
     setCurrentTime(clamped);
-  }, []);
+  }, [clearPendingSeek]);
 
   // restores a track after a page reload without autoplay, at the saved position
   const loadPaused = useCallback((track: Track, timeSec: number) => {
     const audio = audioRef.current;
     if (!audio) return;
+    clearPendingSeek();
     audio.pause();
     audio.src = track.fileUrl;
     audio.load();
-    audio.addEventListener(
-      'loadedmetadata',
-      () => {
-        const max = Number.isFinite(audio.duration) ? audio.duration : timeSec;
-        audio.currentTime = Math.max(0, Math.min(timeSec, max));
-        setCurrentTime(audio.currentTime);
-      },
-      { once: true }
-    );
+    const onLoadedMetadata = () => {
+      pendingSeekCleanupRef.current = null;
+      const max = Number.isFinite(audio.duration) ? audio.duration : timeSec;
+      audio.currentTime = Math.max(0, Math.min(timeSec, max));
+      setCurrentTime(audio.currentTime);
+    };
+    audio.addEventListener('loadedmetadata', onLoadedMetadata, { once: true });
+    pendingSeekCleanupRef.current = () => {
+      audio.removeEventListener('loadedmetadata', onLoadedMetadata);
+    };
     setCurrentTime(0);
     setIsPlaying(false);
-  }, []);
+  }, [clearPendingSeek]);
+
+  useEffect(() => () => clearPendingSeek(), [clearPendingSeek]);
 
   const nextTrack = useCallback(() => {
     if (queueIds.length > 0) {
@@ -566,6 +579,15 @@ export function useAudioEngine({
     );
   }, []);
 
+  const setEqGains = useCallback((gains: number[]) => {
+    setEqBands((prev) =>
+      prev.map((band, i) => ({
+        ...band,
+        gain: Math.max(-12, Math.min(12, gains[i] ?? 0)),
+      }))
+    );
+  }, []);
+
   const applyEqPreset = useCallback((presetKey: string) => {
     const gains = EQ_PRESETS[presetKey];
     if (!gains) return;
@@ -621,6 +643,7 @@ export function useAudioEngine({
     setEqEnabled,
     setEqPreamp,
     setEqBandGain,
+    setEqGains,
     applyEqPreset,
     setAudioFx,
     setSleepTimerMinutes,

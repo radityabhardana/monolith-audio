@@ -1,6 +1,7 @@
-import { AsciiTunerSettings, AudioFxSettings, UserPreferences } from '../types/music';
+import { AsciiTunerSettings, AudioFxSettings, Playlist, UserPreferences } from '../types/music';
 
 const PREFS_KEY = 'monolith_audio_prefs_v5';
+const MIGRATED_KEY = 'monolith_disk_state_migrated_v1';
 const DB_NAME = 'monolith_local_audio_db';
 const DB_VERSION = 1;
 const STORE_TRACKS = 'local_files';
@@ -58,53 +59,287 @@ export const DEFAULT_PREFS: UserPreferences = {
   asciiOverlayEnabled: false,
 };
 
+export function normalizePreferences(
+  parsed: Partial<UserPreferences> | null | undefined
+): UserPreferences {
+  if (!parsed || typeof parsed !== 'object') return DEFAULT_PREFS;
+  return {
+    ...DEFAULT_PREFS,
+    ...parsed,
+    eqGains:
+      Array.isArray(parsed.eqGains) && parsed.eqGains.length === 5
+        ? parsed.eqGains.map((g) => (typeof g === 'number' && Number.isFinite(g) ? g : 0))
+        : DEFAULT_PREFS.eqGains,
+    eqPreamp:
+      typeof parsed.eqPreamp === 'number' && Number.isFinite(parsed.eqPreamp)
+        ? parsed.eqPreamp
+        : DEFAULT_PREFS.eqPreamp,
+    eqEnabled:
+      typeof parsed.eqEnabled === 'boolean'
+        ? parsed.eqEnabled
+        : DEFAULT_PREFS.eqEnabled,
+    volume:
+      typeof parsed.volume === 'number' && Number.isFinite(parsed.volume)
+        ? Math.max(0, Math.min(1, parsed.volume))
+        : DEFAULT_PREFS.volume,
+    playlists: Array.isArray(parsed.playlists)
+      ? parsed.playlists
+      : DEFAULT_PREFS.playlists,
+    likedKeys: Array.isArray(parsed.likedKeys) ? parsed.likedKeys : [],
+    hiddenDemoKeys: Array.isArray(parsed.hiddenDemoKeys)
+      ? parsed.hiddenDemoKeys
+      : [],
+    history: Array.isArray(parsed.history) ? parsed.history : [],
+    playCounts:
+      parsed.playCounts && typeof parsed.playCounts === 'object'
+        ? parsed.playCounts
+        : {},
+    customLyrics:
+      parsed.customLyrics && typeof parsed.customLyrics === 'object'
+        ? parsed.customLyrics
+        : {},
+    metadataOverrides:
+      parsed.metadataOverrides && typeof parsed.metadataOverrides === 'object'
+        ? parsed.metadataOverrides
+        : {},
+    lyricOffsets:
+      parsed.lyricOffsets && typeof parsed.lyricOffsets === 'object'
+        ? parsed.lyricOffsets
+        : {},
+    audioFx: {
+      ...DEFAULT_AUDIO_FX,
+      ...(parsed.audioFx || {}),
+    },
+    asciiTuner: {
+      ...DEFAULT_ASCII_TUNER,
+      ...(parsed.asciiTuner || {}),
+    },
+  };
+}
+
 export function loadPreferences(): UserPreferences {
   try {
     const raw = localStorage.getItem(PREFS_KEY);
     if (!raw) return DEFAULT_PREFS;
     const parsed = JSON.parse(raw) as Partial<UserPreferences>;
-    return {
-      ...DEFAULT_PREFS,
-      ...parsed,
-      eqGains:
-        Array.isArray(parsed.eqGains) && parsed.eqGains.length === 5
-          ? parsed.eqGains
-          : DEFAULT_PREFS.eqGains,
-      playlists: Array.isArray(parsed.playlists)
-        ? parsed.playlists
-        : DEFAULT_PREFS.playlists,
-      likedKeys: Array.isArray(parsed.likedKeys) ? parsed.likedKeys : [],
-      hiddenDemoKeys: Array.isArray(parsed.hiddenDemoKeys)
-        ? parsed.hiddenDemoKeys
-        : [],
-      history: Array.isArray(parsed.history) ? parsed.history : [],
-      playCounts:
-        parsed.playCounts && typeof parsed.playCounts === 'object'
-          ? parsed.playCounts
-          : {},
-      customLyrics:
-        parsed.customLyrics && typeof parsed.customLyrics === 'object'
-          ? parsed.customLyrics
-          : {},
-      metadataOverrides:
-        parsed.metadataOverrides && typeof parsed.metadataOverrides === 'object'
-          ? parsed.metadataOverrides
-          : {},
-      lyricOffsets:
-        parsed.lyricOffsets && typeof parsed.lyricOffsets === 'object'
-          ? parsed.lyricOffsets
-          : {},
-      audioFx: {
-        ...DEFAULT_AUDIO_FX,
-        ...(parsed.audioFx || {}),
-      },
-      asciiTuner: {
-        ...DEFAULT_ASCII_TUNER,
-        ...(parsed.asciiTuner || {}),
-      },
-    };
+    return normalizePreferences(parsed);
   } catch {
     return DEFAULT_PREFS;
+  }
+}
+
+export function hasSavedLocalPreferences(): boolean {
+  try {
+    return localStorage.getItem(PREFS_KEY) !== null;
+  } catch {
+    return false;
+  }
+}
+
+export function isLocalOriginMigrated(): boolean {
+  try {
+    return localStorage.getItem(MIGRATED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function markLocalOriginMigrated(): void {
+  try {
+    localStorage.setItem(MIGRATED_KEY, '1');
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+export function hasMeaningfulPreferences(prefs: UserPreferences): boolean {
+  if (prefs.playlists.length !== 1) return true;
+  if (
+    prefs.playlists.some(
+      (pl) =>
+        pl.id !== 'pl-late-night' ||
+        pl.name !== 'Late Night Mix' ||
+        pl.trackKeys.length > 0 ||
+        Boolean(pl.source) ||
+        Boolean(pl.coverUrl)
+    )
+  ) {
+    return true;
+  }
+  if (
+    prefs.likedKeys.length > 0 ||
+    prefs.history.length > 0 ||
+    Object.keys(prefs.playCounts).length > 0 ||
+    Object.keys(prefs.customLyrics).length > 0 ||
+    Object.keys(prefs.metadataOverrides).length > 0 ||
+    Object.keys(prefs.lyricOffsets).length > 0
+  ) {
+    return true;
+  }
+  if (
+    prefs.eqGains.some((g) => g !== 0) ||
+    prefs.eqPreamp !== DEFAULT_PREFS.eqPreamp ||
+    prefs.eqEnabled !== DEFAULT_PREFS.eqEnabled
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function extractListId(url?: string): string | null {
+  const match = /[?&]list=([\w-]+)/.exec(url ?? '');
+  return match ? match[1] : null;
+}
+
+function isUntouchedDefaultPlaylist(pl: Playlist): boolean {
+  return (
+    pl.id === 'pl-late-night' &&
+    pl.name === 'Late Night Mix' &&
+    pl.trackKeys.length === 0 &&
+    !pl.source &&
+    !pl.coverUrl
+  );
+}
+
+export function mergePreferences(
+  disk: UserPreferences,
+  local: UserPreferences
+): UserPreferences {
+  const merged: Playlist[] = disk.playlists.map((p) => ({
+    ...p,
+    trackKeys: [...p.trackKeys],
+  }));
+
+  for (const lpl of local.playlists) {
+    const hasOtherPlaylists = merged.some((p) => !isUntouchedDefaultPlaylist(p));
+    if (isUntouchedDefaultPlaylist(lpl) && hasOtherPlaylists) continue;
+
+    const localListId = extractListId(lpl.source);
+    const existingIdx = merged.findIndex(
+      (p) =>
+        p.id === lpl.id ||
+        (localListId !== null && extractListId(p.source) === localListId)
+    );
+
+    if (existingIdx !== -1) {
+      const existing = merged[existingIdx];
+      const combinedKeys = Array.from(
+        new Set([...lpl.trackKeys, ...existing.trackKeys])
+      );
+      if (existing.id.startsWith('pl-yt-') && !lpl.id.startsWith('pl-yt-')) {
+        merged[existingIdx] = {
+          ...existing,
+          id: lpl.id,
+          name: lpl.name,
+          coverUrl: lpl.coverUrl ?? existing.coverUrl,
+          source: lpl.source ?? existing.source,
+          createdAt: lpl.createdAt,
+          trackKeys: combinedKeys,
+        };
+      } else {
+        merged[existingIdx] = {
+          ...existing,
+          trackKeys: combinedKeys,
+          coverUrl: existing.coverUrl ?? lpl.coverUrl,
+          source: existing.source ?? lpl.source,
+        };
+      }
+    } else {
+      merged.push({ ...lpl, trackKeys: [...lpl.trackKeys] });
+    }
+  }
+
+  const finalPlaylists =
+    merged.length > 1
+      ? merged.filter((p) => !isUntouchedDefaultPlaylist(p))
+      : merged;
+
+  const likedKeys = Array.from(new Set([...disk.likedKeys, ...local.likedKeys]));
+  const hiddenDemoKeys = Array.from(
+    new Set([...disk.hiddenDemoKeys, ...local.hiddenDemoKeys])
+  );
+  const customLyrics = { ...local.customLyrics, ...disk.customLyrics };
+  const lyricOffsets = { ...local.lyricOffsets, ...disk.lyricOffsets };
+  const metadataOverrides = {
+    ...local.metadataOverrides,
+    ...disk.metadataOverrides,
+  };
+
+  const playCounts: Record<string, number> = { ...local.playCounts };
+  for (const [key, count] of Object.entries(disk.playCounts)) {
+    playCounts[key] = Math.max(playCounts[key] ?? 0, count);
+  }
+
+  const historyMap = new Map<string, number>();
+  for (const entry of [...local.history, ...disk.history]) {
+    if (!entry?.key) continue;
+    const prevTime = historyMap.get(entry.key) ?? 0;
+    if (entry.playedAt >= prevTime) historyMap.set(entry.key, entry.playedAt);
+  }
+  const history = Array.from(historyMap.entries())
+    .map(([key, playedAt]) => ({ key, playedAt }))
+    .sort((a, b) => b.playedAt - a.playedAt)
+    .slice(0, 50);
+
+  return normalizePreferences({
+    ...disk,
+    playlists: finalPlaylists,
+    likedKeys,
+    hiddenDemoKeys,
+    customLyrics,
+    lyricOffsets,
+    metadataOverrides,
+    playCounts,
+    history,
+  });
+}
+
+export async function loadDiskPreferences(): Promise<{
+  available: boolean;
+  exists: boolean;
+  prefs: UserPreferences | null;
+}> {
+  try {
+    const res = await fetch('/api/state', { cache: 'no-store' });
+    const ct = res.headers.get('content-type') || '';
+    if (!res.ok || !ct.includes('application/json')) {
+      return { available: false, exists: false, prefs: null };
+    }
+    const data = (await res.json()) as {
+      exists?: boolean;
+      prefs?: Partial<UserPreferences> | null;
+    };
+    if (data.exists && data.prefs && typeof data.prefs === 'object') {
+      return {
+        available: true,
+        exists: true,
+        prefs: normalizePreferences(data.prefs),
+      };
+    }
+    return { available: true, exists: false, prefs: null };
+  } catch {
+    return { available: false, exists: false, prefs: null };
+  }
+}
+
+export async function saveDiskPreferences(
+  prefs: UserPreferences,
+  options?: { keepalive?: boolean }
+): Promise<boolean> {
+  try {
+    const body = JSON.stringify(prefs);
+    const useKeepalive =
+      Boolean(options?.keepalive) &&
+      new TextEncoder().encode(body).length <= 60_000;
+    const res = await fetch('/api/state', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      ...(useKeepalive ? { keepalive: true } : {}),
+    });
+    return res.ok;
+  } catch {
+    return false;
   }
 }
 
@@ -151,18 +386,101 @@ export function loadPlayback(): StoredPlayback | null {
   }
 }
 
-function openDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(STORE_TRACKS)) {
-        db.createObjectStore(STORE_TRACKS, { keyPath: 'key' });
-      }
+export async function loadDiskPlayback(): Promise<{
+  available: boolean;
+  playback: StoredPlayback | null;
+}> {
+  try {
+    const res = await fetch('/api/playback', { cache: 'no-store' });
+    const ct = res.headers.get('content-type') || '';
+    if (!res.ok || !ct.includes('application/json')) {
+      return { available: false, playback: null };
+    }
+    const data = (await res.json()) as {
+      playback?: Partial<StoredPlayback> | null;
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    const p = data.playback;
+    if (p && typeof p === 'object' && typeof p.key === 'string' && p.key) {
+      return {
+        available: true,
+        playback: {
+          key: p.key,
+          time: Number(p.time) || 0,
+          playlistId:
+            typeof p.playlistId === 'string' && p.playlistId
+              ? p.playlistId
+              : undefined,
+        },
+      };
+    }
+    return { available: true, playback: null };
+  } catch {
+    return { available: false, playback: null };
+  }
+}
+
+export async function saveDiskPlayback(
+  playback: StoredPlayback,
+  options?: { beacon?: boolean }
+): Promise<void> {
+  try {
+    const body = JSON.stringify(playback);
+    if (
+      options?.beacon &&
+      typeof navigator !== 'undefined' &&
+      typeof navigator.sendBeacon === 'function'
+    ) {
+      navigator.sendBeacon(
+        '/api/playback',
+        new Blob([body], { type: 'application/json' })
+      );
+      return;
+    }
+    await fetch('/api/playback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+  } catch {
+    // Degrade gracefully
+  }
+}
+
+let dbPromise: Promise<IDBDatabase> | null = null;
+
+function openDB(): Promise<IDBDatabase> {
+  if (dbPromise) return dbPromise;
+  const pending = new Promise<IDBDatabase>((resolve, reject) => {
+    try {
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(STORE_TRACKS)) {
+          db.createObjectStore(STORE_TRACKS, { keyPath: 'key' });
+        }
+      };
+      req.onsuccess = () => {
+        const db = req.result;
+        db.onclose = () => {
+          if (dbPromise === pending) dbPromise = null;
+        };
+        db.onversionchange = () => {
+          db.close();
+          if (dbPromise === pending) dbPromise = null;
+        };
+        resolve(db);
+      };
+      req.onerror = () => {
+        if (dbPromise === pending) dbPromise = null;
+        reject(req.error);
+      };
+    } catch (error) {
+      if (dbPromise === pending) dbPromise = null;
+      reject(error);
+    }
   });
+  dbPromise = pending;
+  return pending;
 }
 
 export async function saveLocalFilesToDB(items: StoredLocalFile[]): Promise<void> {
@@ -177,6 +495,7 @@ export async function saveLocalFilesToDB(items: StoredLocalFile[]): Promise<void
       }
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error ?? new DOMException('Transaction aborted', 'AbortError'));
     });
   } catch {
     // Degrade gracefully
@@ -192,6 +511,7 @@ export async function loadLocalFilesFromDB(): Promise<StoredLocalFile[]> {
       const req = store.getAll();
       req.onsuccess = () => resolve((req.result as StoredLocalFile[]) || []);
       req.onerror = () => reject(req.error);
+      tx.onabort = () => reject(tx.error ?? new DOMException('Transaction aborted', 'AbortError'));
     });
   } catch {
     return [];
@@ -206,6 +526,7 @@ export async function removeLocalFileFromDB(key: string): Promise<void> {
       tx.objectStore(STORE_TRACKS).delete(key);
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error ?? new DOMException('Transaction aborted', 'AbortError'));
     });
   } catch {
     // Ignore

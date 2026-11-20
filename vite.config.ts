@@ -1,7 +1,17 @@
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
-import { closeSync, existsSync, openSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  createReadStream,
+  existsSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { extname, resolve } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -12,6 +22,10 @@ const STATUS_FILE = resolve(process.cwd(), 'scripts', 'sync_status.json');
 const LOG_FILE = resolve(process.cwd(), 'scripts', 'sync.log');
 const INBOX_DIR = resolve(process.cwd(), 'public', 'inbox');
 const PLAYLIST_JSON = resolve(INBOX_DIR, 'playlist.json');
+const STATE_FILE = resolve(process.cwd(), 'scripts', 'app_state.json');
+const PLAYBACK_FILE = resolve(process.cwd(), 'scripts', 'playback_state.json');
+const MAX_STATE_BYTES = 25 * 1024 * 1024;
+const MAX_PLAYBACK_BYTES = 16 * 1024;
 
 const INBOX_MIME: Record<string, string> = {
   '.mp3': 'audio/mpeg',
@@ -34,6 +48,7 @@ function playlistBridge(): Plugin {
   let lastError = '';
   let activeChild: ChildProcess | null = null;
   let cancelled = false;
+  let currentRunId = 0;
   // ids of the run that just finished; memory-only so a restarted bridge
   // never hands an old run's tracks to a playlist
   let lastIds: string[] = [];
@@ -85,7 +100,73 @@ function playlistBridge(): Plugin {
   const json = (res: ServerResponse, status: number, data: unknown) => {
     res.statusCode = status;
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
     res.end(JSON.stringify(data));
+  };
+
+  const writeJsonAtomic = (filePath: string, data: unknown) => {
+    const tmpPath = `${filePath}.tmp`;
+    try {
+      writeFileSync(tmpPath, JSON.stringify(data), 'utf8');
+      renameSync(tmpPath, filePath);
+    } catch (error) {
+      try {
+        unlinkSync(tmpPath);
+      } catch {
+        // ignore cleanup failure
+      }
+      throw error;
+    }
+  };
+
+  const readJsonBody = (
+    req: IncomingMessage,
+    maxBytes: number,
+    onDone: (
+      result:
+        | { ok: true; data: unknown }
+        | { ok: false; status: number; error: string }
+    ) => void
+  ) => {
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    let tooLarge = false;
+    let settled = false;
+    const finish = (
+      result:
+        | { ok: true; data: unknown }
+        | { ok: false; status: number; error: string }
+    ) => {
+      if (settled) return;
+      settled = true;
+      onDone(result);
+    };
+    req.on('data', (chunk: Buffer | string) => {
+      if (tooLarge || settled) return;
+      const buf = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
+      totalBytes += buf.length;
+      if (totalBytes > maxBytes) {
+        tooLarge = true;
+        chunks.length = 0;
+        return;
+      }
+      chunks.push(buf);
+    });
+    req.on('error', () => {
+      finish({ ok: false, status: 400, error: 'Gagal membaca body request' });
+    });
+    req.on('end', () => {
+      if (tooLarge) {
+        finish({ ok: false, status: 413, error: 'Payload terlalu besar' });
+        return;
+      }
+      try {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        finish({ ok: true, data: JSON.parse(raw) });
+      } catch {
+        finish({ ok: false, status: 400, error: 'JSON tidak valid' });
+      }
+    });
   };
 
   const handler = (
@@ -106,7 +187,7 @@ function playlistBridge(): Plugin {
         res.end();
         return;
       }
-      if (!rel || rel.includes('/') || rel.includes('\\') || rel.includes('..')) {
+      if (!rel || rel.includes('/') || rel.includes('\\') || rel.includes('..') || rel.includes('\0')) {
         res.statusCode = 404;
         res.end();
         return;
@@ -125,11 +206,78 @@ function playlistBridge(): Plugin {
           return;
         }
         const mime = INBOX_MIME[extname(filePath).toLowerCase()] ?? 'application/octet-stream';
-        res.statusCode = 200;
         res.setHeader('Content-Type', mime);
-        res.setHeader('Content-Length', stat.size);
+        res.setHeader('Accept-Ranges', 'bytes');
         res.setHeader('Cache-Control', 'no-store');
-        res.end(req.method === 'HEAD' ? undefined : readFileSync(filePath));
+
+        const rangeHeader = req.headers.range;
+        let start = 0;
+        let end = stat.size - 1;
+        let statusCode = 200;
+
+        if (rangeHeader) {
+          const match = /^bytes=(\d*)-(\d*)$/i.exec(rangeHeader.trim());
+          if (!match || stat.size === 0 || (!match[1] && !match[2])) {
+            res.statusCode = 416;
+            res.setHeader('Content-Range', `bytes */${stat.size}`);
+            res.end();
+            return;
+          }
+          if (match[1] === '') {
+            const suffix = Number(match[2]);
+            if (!Number.isFinite(suffix) || suffix <= 0) {
+              res.statusCode = 416;
+              res.setHeader('Content-Range', `bytes */${stat.size}`);
+              res.end();
+              return;
+            }
+            start = Math.max(0, stat.size - suffix);
+            end = stat.size - 1;
+          } else {
+            start = Number(match[1]);
+            end = match[2] === '' ? stat.size - 1 : Math.min(Number(match[2]), stat.size - 1);
+          }
+          if (
+            !Number.isFinite(start) ||
+            !Number.isFinite(end) ||
+            start < 0 ||
+            start >= stat.size ||
+            start > end
+          ) {
+            res.statusCode = 416;
+            res.setHeader('Content-Range', `bytes */${stat.size}`);
+            res.end();
+            return;
+          }
+          statusCode = 206;
+          res.setHeader('Content-Range', `bytes ${start}-${end}/${stat.size}`);
+        }
+
+        const chunkSize = stat.size === 0 ? 0 : end - start + 1;
+        res.statusCode = statusCode;
+        res.setHeader('Content-Length', chunkSize);
+        if (req.method === 'HEAD' || chunkSize === 0) {
+          res.end();
+          return;
+        }
+        const stream =
+          statusCode === 206
+            ? createReadStream(filePath, { start, end })
+            : createReadStream(filePath);
+        stream.on('error', () => {
+          if (!res.headersSent) {
+            res.removeHeader('Content-Length');
+            res.removeHeader('Content-Range');
+            res.statusCode = 500;
+            res.end();
+          } else {
+            res.destroy();
+          }
+        });
+        res.on('close', () => {
+          if (!stream.destroyed) stream.destroy();
+        });
+        stream.pipe(res);
       } catch {
         res.statusCode = 500;
         res.end();
@@ -158,7 +306,7 @@ function playlistBridge(): Plugin {
           json(res, 400, { ok: false, error: 'Link playlist YouTube tidak valid' });
           return;
         }
-        if (running) {
+        if (running || activeChild !== null) {
           json(res, 409, { ok: false, error: 'Masih ada unduhan yang berjalan' });
           return;
         }
@@ -169,6 +317,7 @@ function playlistBridge(): Plugin {
           return;
         }
 
+        const myRunId = ++currentRunId;
         running = true;
         cancelled = false;
         lastError = '';
@@ -200,6 +349,7 @@ function playlistBridge(): Plugin {
         activeChild = child;
 
         const finalize = (code: number | null) => {
+          if (myRunId !== currentRunId) return;
           activeChild = null;
           const file = readStatus();
           lastError = cancelled
@@ -214,12 +364,13 @@ function playlistBridge(): Plugin {
             total: typeof file.total === 'number' ? file.total : 0,
             error: lastError,
           });
-          lastIds = readRunIds(url);
+          lastIds = cancelled ? [] : readRunIds(url);
           // only after the finished status is on disk, so the UI never reads
           // "done" without the playlist ids that belong to the run
           running = false;
         };
         child.on('error', (error) => {
+          if (myRunId !== currentRunId) return;
           running = false;
           activeChild = null;
           lastError = String(error);
@@ -246,6 +397,7 @@ function playlistBridge(): Plugin {
         return;
       }
       cancelled = true;
+      lastIds = [];
       // shortcut: Windows-only (taskkill /T). On other OSes kill the process group instead.
       const killer = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], {
         stdio: 'ignore',
@@ -284,6 +436,108 @@ function playlistBridge(): Plugin {
         total: typeof file.total === 'number' ? file.total : 0,
         error: (typeof file.error === 'string' && file.error) || lastError,
         ids: lastIds,
+      });
+      return;
+    }
+
+    if (path === '/api/state' && req.method === 'GET') {
+      if (!existsSync(STATE_FILE)) {
+        json(res, 200, { exists: false, prefs: null });
+        return;
+      }
+      try {
+        const parsed: unknown = JSON.parse(readFileSync(STATE_FILE, 'utf8'));
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          json(res, 200, { exists: true, prefs: parsed });
+        } else {
+          json(res, 200, { exists: false, prefs: null });
+        }
+      } catch {
+        json(res, 200, { exists: false, prefs: null });
+      }
+      return;
+    }
+
+    if (path === '/api/state' && req.method === 'POST') {
+      readJsonBody(req, MAX_STATE_BYTES, (result) => {
+        if (!result.ok) {
+          json(res, result.status, { ok: false, error: result.error });
+          return;
+        }
+        const data = result.data;
+        if (
+          !data ||
+          typeof data !== 'object' ||
+          Array.isArray(data) ||
+          !Array.isArray((data as Record<string, unknown>).playlists)
+        ) {
+          json(res, 400, { ok: false, error: 'Payload state tidak valid' });
+          return;
+        }
+        try {
+          writeJsonAtomic(STATE_FILE, data);
+          json(res, 200, { ok: true });
+        } catch (error) {
+          json(res, 500, { ok: false, error: String(error) });
+        }
+      });
+      return;
+    }
+
+    if (path === '/api/playback' && req.method === 'GET') {
+      if (!existsSync(PLAYBACK_FILE)) {
+        json(res, 200, { playback: null });
+        return;
+      }
+      try {
+        const parsed: unknown = JSON.parse(readFileSync(PLAYBACK_FILE, 'utf8'));
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          json(res, 200, { playback: parsed });
+        } else {
+          json(res, 200, { playback: null });
+        }
+      } catch {
+        json(res, 200, { playback: null });
+      }
+      return;
+    }
+
+    if (path === '/api/playback' && req.method === 'POST') {
+      readJsonBody(req, MAX_PLAYBACK_BYTES, (result) => {
+        if (!result.ok) {
+          json(res, result.status, { ok: false, error: result.error });
+          return;
+        }
+        const raw = result.data;
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+          json(res, 400, { ok: false, error: 'Payload playback tidak valid' });
+          return;
+        }
+        const obj = raw as Record<string, unknown>;
+        const key = obj.key;
+        const time = obj.time;
+        const playlistId =
+          typeof obj.playlistId === 'string' && obj.playlistId ? obj.playlistId : undefined;
+        if (
+          typeof key !== 'string' ||
+          key.length === 0 ||
+          typeof time !== 'number' ||
+          !Number.isFinite(time) ||
+          time < 0
+        ) {
+          json(res, 400, { ok: false, error: 'Payload playback tidak valid' });
+          return;
+        }
+        try {
+          writeJsonAtomic(PLAYBACK_FILE, {
+            key,
+            time,
+            ...(playlistId ? { playlistId } : {}),
+          });
+          json(res, 200, { ok: true });
+        } catch (error) {
+          json(res, 500, { ok: false, error: String(error) });
+        }
       });
       return;
     }

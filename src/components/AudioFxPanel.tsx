@@ -141,8 +141,11 @@ export const AudioFxPanel: React.FC<AudioFxPanelProps> = ({
   const lowpassHz = audioFx.lowpassHz ?? 20000;
 
   const [customSleepMins, setCustomSleepMins] = useState(25);
-  const [meterState, setMeterState] = useState({ rms: 0, peak: 0 });
+  const rmsRef = useRef(0);
   const peakHoldRef = useRef(0);
+  const meterTextRef = useRef<HTMLSpanElement | null>(null);
+  const meterRmsBarRef = useRef<HTMLDivElement | null>(null);
+  const meterPeakRef = useRef<HTMLDivElement | null>(null);
   const curveCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const isSlowedReverb = audioFx.speed < 0.92 && audioFx.reverbMix >= 0.25 && !audioFx.preservesPitch;
@@ -340,16 +343,30 @@ export const AudioFxPanel: React.FC<AudioFxPanelProps> = ({
           const abs = Math.abs(sample);
           if (abs > maxAbs) maxAbs = abs;
         }
-        const rms = Math.min(1, Math.sqrt(sumSq / waveData.length) * 2.2);
-        peakHoldRef.current = Math.max(maxAbs, peakHoldRef.current * 0.94);
-        setMeterState({ rms, peak: Math.min(1, peakHoldRef.current) });
+        rmsRef.current = Math.min(1, Math.sqrt(sumSq / waveData.length) * 2.2);
+        peakHoldRef.current = Math.min(1, Math.max(maxAbs, peakHoldRef.current * 0.94));
       } else {
-        peakHoldRef.current *= 0.85;
-        setMeterState((prev) =>
-          prev.rms < 0.01 && prev.peak < 0.01
-            ? prev
-            : { rms: prev.rms * 0.8, peak: peakHoldRef.current }
-        );
+        rmsRef.current = rmsRef.current < 0.01 ? 0 : rmsRef.current * 0.8;
+        peakHoldRef.current = peakHoldRef.current < 0.01 ? 0 : peakHoldRef.current * 0.85;
+      }
+
+      const rmsPct = Math.round(rmsRef.current * 100);
+      const peakPct = Math.round(peakHoldRef.current * 100);
+      if (meterTextRef.current) {
+        meterTextRef.current.textContent = isPlaying
+          ? `${rmsPct}% RMS · ${peakPct}% PK`
+          : 'Idle';
+      }
+      if (meterRmsBarRef.current) {
+        meterRmsBarRef.current.style.width = `${rmsPct}%`;
+      }
+      if (meterPeakRef.current) {
+        if (peakHoldRef.current > 0.02) {
+          meterPeakRef.current.style.display = '';
+          meterPeakRef.current.style.left = `${Math.min(99, peakPct)}%`;
+        } else {
+          meterPeakRef.current.style.display = 'none';
+        }
       }
 
       rafId = window.requestAnimationFrame(draw);
@@ -816,26 +833,24 @@ export const AudioFxPanel: React.FC<AudioFxPanelProps> = ({
                 <Gauge size={13} />
                 Output Level
               </span>
-              <span className="font-mono text-zinc-300 tabular-nums">
-                {isPlaying
-                  ? `${Math.round(meterState.rms * 100)}% RMS · ${Math.round(meterState.peak * 100)}% PK`
-                  : 'Idle'}
+              <span ref={meterTextRef} className="font-mono text-zinc-300 tabular-nums">
+                {isPlaying ? '0% RMS · 0% PK' : 'Idle'}
               </span>
             </div>
             <div className="relative h-2.5 w-full rounded-full bg-black/50 border border-white/[0.06] overflow-hidden">
               <div
+                ref={meterRmsBarRef}
                 className="h-full rounded-full transition-[width] duration-75"
                 style={{
-                  width: `${Math.round(meterState.rms * 100)}%`,
+                  width: '0%',
                   background: `linear-gradient(90deg, rgba(${accent}, 0.55), rgb(${accent}))`,
                 }}
               />
-              {meterState.peak > 0.02 && (
-                <div
-                  className="absolute top-0 bottom-0 w-0.5 bg-white"
-                  style={{ left: `${Math.min(99, Math.round(meterState.peak * 100))}%` }}
-                />
-              )}
+              <div
+                ref={meterPeakRef}
+                className="absolute top-0 bottom-0 w-0.5 bg-white"
+                style={{ left: '0%', display: 'none' }}
+              />
             </div>
           </div>
         </div>
